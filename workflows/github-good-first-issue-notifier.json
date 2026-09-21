@@ -1,0 +1,225 @@
+{
+  "name": "GitHub Good First Issue Notifier",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1-5"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "id": "bd915c2f-7aa8-4bbb-8df4-d7b43a9ada30",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "resource": "repository",
+        "owner": {
+          "__rl": true,
+          "value": "Xhenzouu",
+          "mode": "list",
+          "cachedResultName": "Xhenzouu",
+          "cachedResultUrl": "https://github.com/Xhenzouu"
+        },
+        "repository": {
+          "__rl": true,
+          "value": "xirv-systems",
+          "mode": "list",
+          "cachedResultName": "xirv-systems",
+          "cachedResultUrl": "https://github.com/Xhenzouu/xirv-systems"
+        },
+        "limit": 20,
+        "getRepositoryIssuesFilters": {
+          "state": "open"
+        }
+      },
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 1.1,
+      "position": [
+        208,
+        0
+      ],
+      "id": "08c923fa-1f2c-473c-b0aa-3f03e81ee7fc",
+      "name": "Get issues of a repository",
+      "webhookId": "155f0991-94fd-4732-a8f6-32ba74e5c598",
+      "credentials": {
+        "githubApi": {
+          "id": "UrCgjmhFDNDA2eKg",
+          "name": "GitHub account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "1c500e64-1ca4-420e-ae89-28c729934753",
+              "leftValue": "={{ $json.labels.some(l => l.name === 'good first issue') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "bc7d1d5e-ccac-4b14-bfab-aaf56482da91",
+              "leftValue": "={{ $json.pull_request === undefined }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        416,
+        0
+      ],
+      "id": "b4ba0f3d-1def-4ba9-b788-81b0d775f89f",
+      "name": "Filter"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "eb4fd593-be0d-490e-87db-ba3c3bf45fb2",
+              "name": "subject",
+              "value": "=Good first issue: {{ $json.title }}",
+              "type": "string"
+            },
+            {
+              "id": "de6c16c9-9de3-44a0-919e-18815775c433",
+              "name": "body",
+              "value": "=New \"good first issue\" in xirv-systems:  Title: {{ $json.title }} Issue #: {{ $json.number }} URL: {{ $json.html_url }}  Labels: {{ $json.labels.map(l => l.name).join(', ') }}  View on GitHub: {{ $json.html_url }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        624,
+        0
+      ],
+      "id": "82eb110f-0579-45b8-b3ec-334f6ec6aee7",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "sendTo": "arroyobrix@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "emailType": "text",
+        "message": "={{ $json.body }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        832,
+        0
+      ],
+      "id": "380267d3-5667-4924-a587-d0592392f6a1",
+      "name": "Send a message",
+      "webhookId": "ba51a17b-3230-4eea-989e-5048bb3e7d86",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YMlLwckc0HKbVTPs",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get issues of a repository",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get issues of a repository": {
+      "main": [
+        [
+          {
+            "node": "Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "timezone": "Asia/Manila",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "QrwEHGtfw3YMomeH",
+    "executionTimeout": -1
+  },
+  "versionId": "c06ee2bc-c5b8-482f-8e14-91dbfdccc3d0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "daae1a4cfdc8cedef8e4c0a51dea5436df6634717b0af4368ce8236758877cd8"
+  },
+  "id": "oHrBYxyatm89gdkp",
+  "tags": []
+}

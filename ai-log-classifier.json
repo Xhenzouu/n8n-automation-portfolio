@@ -1,0 +1,309 @@
+{
+  "name": "AI Log Classifier",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "log-classifier",
+        "options": {
+          "responseCode": {
+            "values": {}
+          }
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "68947e14-21ff-47a2-9fc0-4bd022c8966c",
+      "name": "Webhook",
+      "webhookId": "9c3d11b1-7bbd-4f5d-ab7f-13511835af6f"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"openai/gpt-oss-20b\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a log classifier. Classify the severity of the log and respond ONLY with valid JSON matching this exact structure: {\\\"severity\\\": \\\"critical\\\"|\\\"warning\\\"|\\\"info\\\", \\\"summary\\\": \\\"one sentence\\\", \\\"recommended_action\\\": \\\"what to do\\\"}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Log: {{ $json.body.message }} | Source: {{ $json.body.source }} | Level: {{ $json.body.level }}\"\n    }\n  ],\n  \"response_format\": { \"type\": \"json_object\" },\n  \"temperature\": 0.1\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        208,
+        0
+      ],
+      "id": "745b6840-183f-4785-b945-f6992cee67cc",
+      "name": "HTTP Request",
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const groqResponse = $input.first().json;\nconst contentString = groqResponse.choices[0].message.content;\nconst parsed = JSON.parse(contentString);\n\nconst originalBody = $('Webhook').first().json.body;\n\nreturn {\n  json: {\n    severity: parsed.severity,\n    summary: parsed.summary,\n    recommended_action: parsed.recommended_action,\n    raw_message: originalBody.message,\n    source: originalBody.source\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        0
+      ],
+      "id": "ba7b8893-1f15-41a9-b98f-a6d16233e431",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "critical",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "12b452b1-5ef8-4522-8bc6-26eafe70b4cb"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "critical"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "b7e708c4-c862-418f-a0a7-2dadf101e39d",
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "warning",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "warning"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "ba941b31-cd46-45e2-a282-6a46b36dac9b",
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "info",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "info"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        624,
+        0
+      ],
+      "id": "9cf4bf01-a5ae-4efd-9b55-23c87e24f6d9",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO error_logs (severity, summary, recommended_action, raw_message, source)\nVALUES (\n  '{{ $json.severity }}',\n  '{{ $json.summary.replace(/'/g, \"''\") }}',\n  '{{ $json.recommended_action.replace(/'/g, \"''\") }}',\n  '{{ $json.raw_message.replace(/'/g, \"''\") }}',\n  '{{ $json.source }}'\n);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        848,
+        -160
+      ],
+      "id": "20d5f422-853b-4001-b07d-08689052ccdc",
+      "name": "Execute a SQL query",
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO error_logs (severity, summary, recommended_action, raw_message, source)\nVALUES (\n  '{{ $json.severity }}',\n  '{{ $json.summary.replace(/'/g, \"''\") }}',\n  '{{ $json.recommended_action.replace(/'/g, \"''\") }}',\n  '{{ $json.raw_message.replace(/'/g, \"''\") }}',\n  '{{ $json.source }}'\n);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        864,
+        16
+      ],
+      "id": "c9a0b19d-9f1f-4c25-9ff5-117e8ae29753",
+      "name": "Execute a SQL query1",
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO error_logs (severity, summary, recommended_action, raw_message, source)\nVALUES (\n  '{{ $json.severity }}',\n  '{{ $json.summary.replace(/'/g, \"''\") }}',\n  '{{ $json.recommended_action.replace(/'/g, \"''\") }}',\n  '{{ $json.raw_message.replace(/'/g, \"''\") }}',\n  '{{ $json.source }}'\n);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        864,
+        208
+      ],
+      "id": "00489aa9-773c-4fff-8cf3-6e6879bbf613",
+      "name": "Execute a SQL query2",
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=🚨 CRITICAL LOG\n\n{{ $('Code in JavaScript').item.json.summary }}\n\nRecommended action:\n{{ $('Code in JavaScript').item.json.recommended_action }}\n\nSource: {{ $('Code in JavaScript').item.json.source }}\nRaw: {{ $('Code in JavaScript').item.json.raw_message }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1056,
+        -160
+      ],
+      "id": "18e80272-cd5b-46ef-9c50-3966d6a8d6d2",
+      "name": "Send a text message",
+      "webhookId": "ca20d9ee-a36f-487c-8a11-49c9b62f283c",
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute a SQL query1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute a SQL query2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "82ed4af7-55b9-4886-9a45-b179096cb52c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "daae1a4cfdc8cedef8e4c0a51dea5436df6634717b0af4368ce8236758877cd8"
+  },
+  "id": "YPERc3u3dKIIbjyq",
+  "tags": []
+}

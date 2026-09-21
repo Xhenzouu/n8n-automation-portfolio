@@ -1,0 +1,17 @@
+# n8n local data
+.n8n/
+*.db
+*.sqlite
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,422 @@
+{
+  "name": "af-homes-inquiry-intake",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "af-homes-inquiry",
+        "options": {
+          "responseCode": {
+            "values": {}
+          }
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "58b1d28b-c275-4789-97c6-d0a1445684cb",
+      "name": "Webhook",
+      "webhookId": "ed0c35c1-ea7e-46f4-87a7-a0b17c353249"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"openai/gpt-oss-20b\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an inquiry classifier for a fictional property developer.\\n\\nClassify each inquiry and extract structured details. Respond ONLY with valid JSON matching this exact structure:\\n\\n{\\n  \\\"category\\\": \\\"booking\\\" | \\\"vip_card\\\" | \\\"careers\\\" | \\\"general\\\",\\n  \\\"priority\\\": \\\"high\\\" | \\\"low\\\",\\n  \\\"summary\\\": \\\"one sentence summarizing the inquiry\\\",\\n  \\\"extracted\\\": {\\n    \\\"name\\\": \\\"string or null\\\",\\n    \\\"email\\\": \\\"string or null\\\",\\n    \\\"phone\\\": \\\"string or null\\\",\\n    \\\"property_interest\\\": \\\"string or null\\\",\\n    \\\"timeline\\\": \\\"string or null\\\"\\n  }\\n}\\n\\nRules for category:\\n- \\\"booking\\\" = reservation requests, viewing schedules, unit availability\\n- \\\"vip_card\\\" = VIP card questions, membership tiers, loyalty program\\n- \\\"careers\\\" = job applications, internship inquiries\\n- \\\"general\\\" = anything else\\n\\nRules for priority:\\n- \\\"high\\\" = booking inquiries OR vip_card inquiries\\n- \\\"low\\\" = careers OR general inquiries\\n\\nExtract only fields mentioned in the inquiry. Use null for fields not provided.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Classify this inquiry:\\n\\n{{ $json.body.inquiry }}\"\n    }\n  ],\n  \"response_format\": { \"type\": \"json_object\" },\n  \"temperature\": 0.1\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        208,
+        0
+      ],
+      "id": "f1900363-487c-4271-99a4-0a9268771a9d",
+      "name": "HTTP Request",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "dSoPhZd45do4pT9v",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const groqResponse = $input.first().json;\nconst contentString = groqResponse.choices[0].message.content;\nconst parsed = JSON.parse(contentString);\n\nconst originalInquiry = $('Webhook').first().json.body.inquiry;\n\nreturn {\n  json: {\n    inquiry: originalInquiry,\n    category: parsed.category,\n    priority: parsed.priority,\n    summary: parsed.summary,\n    extracted_name: parsed.extracted.name,\n    extracted_email: parsed.extracted.email,\n    extracted_phone: parsed.extracted.phone,\n    extracted_property: parsed.extracted.property_interest,\n    extracted_timeline: parsed.extracted.timeline\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        0
+      ],
+      "id": "904b9ea3-2852-46f5-9556-1b5b0e856369",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO inquiries (\n  inquiry, category, priority, summary,\n  extracted_name, extracted_email, extracted_phone,\n  extracted_property, extracted_timeline,\n  draft_reply, retrieved_sources\n)\nVALUES (\n  '{{ $('Code in JavaScript').item.json.inquiry.replace(/'/g, \"''\") }}',\n  '{{ $('Code in JavaScript').item.json.category }}',\n  '{{ $('Code in JavaScript').item.json.priority }}',\n  '{{ $('Code in JavaScript').item.json.summary.replace(/'/g, \"''\") }}',\n  '{{ $('Code in JavaScript').item.json.extracted_name || \"\" }}',\n  '{{ $('Code in JavaScript').item.json.extracted_email || \"\" }}',\n  '{{ $('Code in JavaScript').item.json.extracted_phone || \"\" }}',\n  '{{ $('Code in JavaScript').item.json.extracted_property.replace(/'/g, \"''\") }}',\n  '{{ $('Code in JavaScript').item.json.extracted_timeline || \"\" }}',\n  '{{ $json.choices[0].message.content.replace(/'/g, \"''\") }}',\n  ARRAY[{{ $('Retrieve FAQ Chunks').all().map(i => i.json.source).filter(Boolean).map(s => `'${s.replace(/'/g, \"''\")}'`).join(',') }}]::text[]\n);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1664,
+        0
+      ],
+      "id": "842401b4-b217-4f58-be22-4a9596bf0e2a",
+      "name": "Execute a SQL query",
+      "credentials": {
+        "postgres": {
+          "id": "IbRwiLg11WhiBmNv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "7eae68e4-6b82-4a46-8553-bf67f39a50e4",
+              "leftValue": "={{ $('Code in JavaScript').item.json.priority }}",
+              "rightValue": "high",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1872,
+        0
+      ],
+      "id": "96833947-349d-4a12-b46b-4d49472314a4",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "6GIZ1PVeXjybKHD0",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/6GIZ1PVeXjybKHD0",
+          "cachedResultName": "notify-telegram"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "message": "={{ $json.message }}"
+          },
+          "matchingColumns": [
+            "message"
+          ],
+          "schema": [
+            {
+              "id": "message",
+              "displayName": "message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        2272,
+        -96
+      ],
+      "id": "9a37b529-94eb-4bd4-8d1b-cdb4ae2878cb",
+      "name": "Call 'notify-telegram'"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "dc47e9b9-1f41-4566-acf4-a7f8ceb073ed",
+              "name": "message",
+              "value": "=🚨 High-priority inquiry  Category: {{ $('Code in JavaScript').item.json.category }} Name: {{ $('Code in JavaScript').item.json.extracted_name \n\n \"Unknown\" }} Contact: {{ $('Code in JavaScript').item.json.extracted_phone \n\n $('Code in JavaScript').item.json.extracted_email \n\n \"Not provided\" }} Property: {{ $('Code in JavaScript').item.json.extracted_property \n\n \"N/A\" }} Timeline: {{ $('Code in JavaScript').item.json.extracted_timeline \n\n \"N/A\" }}  Summary: {{ $('Code in JavaScript').item.json.summary }}  Reply to this inquiry within 24 hours.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2080,
+        -96
+      ],
+      "id": "a1785d2e-0ecc-4080-a202-e4e8e0c6194b",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"models/gemini-embedding-001\",\n  \"content\": {\n    \"parts\": [\n      { \"text\": \"{{ $('Code in JavaScript').item.json.inquiry }}\" }\n    ]\n  },\n  \"outputDimensionality\": 1536\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        624,
+        0
+      ],
+      "id": "15c636b1-f37e-40a1-9fc4-f3f8e15adf96",
+      "name": "Embed Inquiry",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "idXsyGGjUrdiPzmv",
+          "name": "Gemini API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body_string }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1456,
+        0
+      ],
+      "id": "92110deb-2e21-4a21-a3ad-2537cfb262ac",
+      "name": "Draft Reply",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "dSoPhZd45do4pT9v",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const embedding = $('Embed Inquiry').item.json.embedding.values;\nconst vectorString = '[' + embedding.join(',') + ']';\n\nreturn {\n  json: {\n    vector_string: vectorString\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        832,
+        0
+      ],
+      "id": "165ff233-47bc-45c4-bb83-3ac623c0390a",
+      "name": "Build RPC Body"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select id, source, title, content, similarity\nfrom match_faq_chunks(\n  '{{ $json.vector_string }}'::vector,\n  0.3,\n  3\n);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1040,
+        0
+      ],
+      "id": "d9237ac3-cb0f-4b21-b789-e00bd0337051",
+      "name": "Retrieve FAQ Chunks",
+      "credentials": {
+        "postgres": {
+          "id": "IbRwiLg11WhiBmNv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const inquiry = $('Code in JavaScript').item.json.inquiry;\nconst chunks = $('Retrieve FAQ Chunks').all();\n\nconst context = chunks\n  .map(i => `--- ${i.json.source} ---\\n${i.json.content}`)\n  .join('\\n\\n');\n\nconst body = {\n  model: 'openai/gpt-oss-20b',\n  messages: [\n    {\n      role: 'system',\n      content: 'You are a customer service assistant for a fictional property developer. Draft a reply to the customer\\'s inquiry, grounded ONLY in the provided knowledge base excerpts. If the knowledge base doesn\\'t cover the inquiry, say so politely and suggest contacting the sales team. Do not invent facts. Keep the reply to 3-5 sentences, professional and warm.'\n    },\n    {\n      role: 'user',\n      content: `Customer inquiry:\\n${inquiry}\\n\\nKnowledge base excerpts:\\n${context}`\n    }\n  ],\n  temperature: 0.3\n};\n\nreturn {\n  json: {\n    body_string: JSON.stringify(body)\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        0
+      ],
+      "id": "ecab23f3-2c7a-42f5-b2d8-b29ab12a457e",
+      "name": "Build Draft Body"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Embed Inquiry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Call 'notify-telegram'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Inquiry": {
+      "main": [
+        [
+          {
+            "node": "Build RPC Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Reply": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build RPC Body": {
+      "main": [
+        [
+          {
+            "node": "Retrieve FAQ Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retrieve FAQ Chunks": {
+      "main": [
+        [
+          {
+            "node": "Build Draft Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Draft Body": {
+      "main": [
+        [
+          {
+            "node": "Draft Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "5dd4fb39-526b-45a8-b191-29534bcea2e0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "daae1a4cfdc8cedef8e4c0a51dea5436df6634717b0af4368ce8236758877cd8"
+  },
+  "id": "OaS4FJ0IjPuX2P9E",
+  "tags": []
+}

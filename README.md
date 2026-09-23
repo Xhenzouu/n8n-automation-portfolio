@@ -129,6 +129,77 @@ Every specific number was sourced from the retrieved FAQ chunks — none invente
 
 ---
 
+### 5. AI Lead Qualification Agent (Groq + Apify + Supabase)
+
+**Status:** Slices 1 and 2 complete. Slices 3 and 4 deferred — see Roadmap.
+
+Event-driven workflow that receives inbound leads via webhook, enriches them with company data from Apify, uses an AI Agent to score them as high / medium / low against explicit countable criteria, and logs the score with a machine-readable audit trail to PostgreSQL.
+
+**Problem it solves:** Manual lead triage is subjective, inconsistent, and slow. Even LLM-based scoring is unreliable when the prompt uses adjectives instead of rules. This workflow demonstrates how to make an AI agent's scoring deterministic, auditable, and defensible — a reliability engineering problem, not just a prompting problem.
+
+**Architecture:**
+
+```
+Webhook (POST /lead-qualifier)
+→ Enrich Company: HTTP Request to Apify (company-data-enricher by domain)
+→ AI Agent: "Qualify Lead" — scores against 5 countable criteria
+    └── Groq Chat Model: openai/gpt-oss-20b (temperature 0.0)
+→ Parse Agent Output: Code node — JSON.parse + Title Case normalization + SQL escaping
+→ Log Lead: Postgres INSERT into leads table
+```
+
+**The determinism fix (the strongest story in this workflow):**
+
+The initial version used temperature 0.1 and a system prompt that described criteria with adjectives: *"enterprise company, specific request, decision-maker."* The same test payload scored **medium / medium / high** across three runs. The `high` run's reasoning invented a signal that wasn't present in the payload — *"implying the sender is a decision-maker"* — from a message that never named a role.
+
+The fix had three parts:
+
+1. **Temperature 0.0** — not 0.1. Deterministic greedy decoding.
+2. **Countable criteria** — replaced adjectives with 5 explicit signals and a numeric threshold: `high = 2+ criteria, medium = 1, low = 0`.
+3. **Strictness clause** — explicit instruction: *"Ambiguous cases lean toward the lower score, not the higher one. Do not infer signals that aren't stated."*
+
+Result: three identical runs of the same payload now return identical scores and identical `criteria_met` arrays. Verified across 6 runs (3× medium, 3× high).
+
+**Key implementation details:**
+
+- **Countable criteria over adjectives.** The system prompt defines 5 signals: decision-maker role, budget/approval, company maturity (from enrichment), timeline, specific solution request. The scoring rule is arithmetic, not judgment.
+- **Machine-readable audit trail.** The agent returns `criteria_met` as a JSON array of strings. Any reviewer can verify the score by counting the array — no interpretation of the LLM's prose required.
+- **Enrichment via Apify's company-data-enricher.** Domain-based lookup returns LinkedIn presence, domain age, technology stack, and RDAP registration data. No paid API keys required.
+- **Criterion 3 requires 2+ of 4 enrichment signals.** LinkedIn link alone doesn't pass it. This prevents a single signal from falsely flagging a company as mature.
+- **Manual JSON parsing over LangChain's Structured Output Parser.** The parser rejected valid LLM output when `criteria_met` contained 4+ items. Replaced with a Code node that strips markdown fences, `JSON.parse()`s the raw string, and handles the shape in code — same pattern used in Projects 2 and 4.
+- **Empty-response guard.** Transient Groq failures sometimes return an empty `content` string. The Parse Agent Output node detects this, logs the lead with `score: low` and a clear `"Classification failed"` reasoning, and avoids losing the lead entirely.
+- **Title Case normalization in code, not in the prompt.** LLM casing drifted between `"SPECIFIC SOLUTION REQUEST"` and `"Specific Solution Request"` even at temperature 0. Fixed deterministically via `.replace(/\b\w/g, l => l.toUpperCase())` in the Code node.
+
+**Verified behavior (determinism test, 2026-09-23):**
+
+Three identical runs of a medium-signal lead with empty enrichment (`maria@acme.ph`) returned:
+- `score: medium` all 3 times
+- `criteria_met: ["Specific Solution Request"]` all 3 times
+- `enrichment_summary.domain_age: null`
+
+Three identical runs of a high-signal lead with enrichment (`juan@example.com` — IANA-reserved domain with populated RDAP data):
+- `score: high` all 3 times
+- `criteria_met: ["Decision-Maker Role", "Budget Or Approval", "Company Maturity", "Timeline", "Specific Solution Request"]` all 3 times
+- `enrichment_summary.domain_age: "31 years"`
+
+The `Company Maturity` criterion fires only when enrichment supports it. When enrichment returns empty, the criterion stays absent and the score reflects only the signals present in the message.
+
+**Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Apify (`company-data-enricher`) · Supabase (PostgreSQL) · LangChain AI Agent node
+
+**Gotchas specific to this workflow:**
+
+- **LLM classification is not deterministic by default.** Temperature 0.1 is not "low enough" for consistent scores on classification tasks. Use temperature 0 for any workflow where the same input should produce the same output.
+- **Adjectives in prompts produce nondeterministic scoring.** "Enterprise company, specific request, decision-maker" is subjective. Countable criteria with explicit thresholds remove the LLM's room for interpretation.
+- **The AI Agent's Chat Model output may appear empty.** With the Tools Agent architecture, the model's first response is a tool call (`finish_reason: "tool_calls"`), not a text completion. The final output is the agent's parsed JSON. Don't debug the empty Chat Model output.
+- **The LangChain Structured Output Parser is fragile with longer arrays.** It rejected valid JSON when `criteria_met` contained 4+ items. Manual `JSON.parse()` in a Code node is more reliable and easier to debug.
+- **Nested field access on external API responses silently returns undefined.** Apify returns `domainInfo.domainAge`, not `domainAge`. Accessing the wrong path doesn't throw — it returns undefined and the criterion silently fails. Verify field paths against actual API output before wiring them into prompts.
+- **Title Case normalization belongs in code, not in the prompt.** Adding "use Title Case" to the system prompt reduces but does not eliminate casing drift. Deterministic post-processing in a Code node is the correct fix.
+- **Inline array expressions in n8n's Postgres Query field are fragile.** The `ARRAY[...]` construction with arrow functions and nested quotes broke silently in Project 4 and was avoided here. Precompute SQL-safe values in a Code node.
+- **Empty LLM responses happen.** Guard against them explicitly. A lead with a failed classification is still a lead — log it with a failure marker rather than dropping it.
+- **n8n's Header Auth credential: the "Name" field is the HTTP header key, not a display label.** Setting `Name: Apify API` produces `ERR_INVALID_HTTP_TOKEN` because spaces aren't valid in HTTP header names. Use `Name: Authorization`, `Value: Bearer <token>`. The credential's human-readable label is set separately when you name the credential during save.
+
+---
+
 ## Repo Structure
 
 ```
@@ -360,6 +431,9 @@ LIMIT 1;
 - [ ] Build a simple dashboard (React) that queries `error_logs` and `inquiries`
 - [ ] Expand FAQ corpus and re-calibrate similarity threshold as corpus grows
 - [ ] Extract `notify-telegram` into a fully reusable sub-workflow (currently duplicated across workflows)
+- [ ] **AI Lead Qualification Agent — Slice 3:** Route leads by score. High → HubSpot deal + Telegram alert. Medium → Airtable nurture list + scheduled follow-up. Low → Supabase only. Integrates two new business tools (HubSpot, Airtable) and introduces conditional branching based on the agent's scoring output.
+- [ ] **AI Lead Qualification Agent — Slice 4:** Personalized response email drafting. Extend the agent's output schema to include a `draft_reply` field grounded in the enrichment data and the lead's original message. Log the draft to Supabase; optionally send via Gmail for high-scoring leads.
+- [ ] **Calibrate the Company Maturity threshold with a real corpus.** The current "2 of 4 enrichment signals" threshold was validated against two test domains. Re-calibrate against 20–30 real domains spanning actual company sizes to confirm the threshold discriminates correctly.
 
 ## About
 

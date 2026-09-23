@@ -1,0 +1,213 @@
+{
+  "name": "AI Lead Qualification Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-qualifier",
+        "options": {
+          "responseCode": {
+            "values": {}
+          }
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "c4043dd4-9c77-4496-bd34-ccc71dbd5d32",
+      "name": "Webhook",
+      "webhookId": "55353d57-c5eb-482a-a3cf-1cc688f20a5c"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Webhook').item.json.body.message }}\n\n--- ENRICHMENT DATA ---\nSocial Links: {{ $('Enrich Company').item.json.socialLinks ? JSON.stringify($('Enrich Company').item.json.socialLinks) : \"none\" }}\nDomain Age: {{ $('Enrich Company').item.json.domainInfo?.domainAge || \"unknown\" }}\nTechnologies: {{ ($('Enrich Company').item.json.technologies || []).join(\", \") || \"none\" }}\nRDAP Registration: {{ $('Enrich Company').item.json.domainInfo?.registrationDate || \"unknown\" }}",
+        "options": {
+          "systemMessage": "You are an AI Lead Qualification Agent. Score each lead as high, medium, or low using the explicit criteria below.\n\nSCORING CRITERIA:\nCount how many of these signals are present in the lead data:\n\n1. DECISION-MAKER ROLE — The contact's role is named or clearly implied as CTO, CEO, VP, Head of, Director, Founder, Owner, or equivalent. Look for these in the message text.\n\n2. BUDGET OR APPROVAL — The message mentions budget approval, purchasing authority, or an approved initiative. (\"We have budget,\" \"approved,\" \"allocated,\" \"signed off.\")\n\n3. COMPANY MATURITY — Met if the ENRICHMENT DATA shows at least TWO of the following:\n   - Social Links includes a LinkedIn company page\n   - Domain Age is greater than 3 years\n   - Technologies array is not empty\n   - RDAP Registration date is present\n   If enrichment data is \"none\" or \"unknown\", this criterion is NOT met. Do not infer company size from the message text.\n\n4. TIMELINE — The message states a specific timeline. (\"Q1 2027,\" \"next month,\" \"by end of year,\" \"within 30 days.\")\n\n5. SPECIFIC SOLUTION REQUEST — The message requests a solution matched to a specific use case. (Not \"tell me more\" — a concrete need like \"automate our sales pipeline\" or \"integrate with HubSpot.\")\n\nSCORING RULES:\n- high: 2 or more criteria present\n- medium: exactly 1 criterion present\n- low: 0 criteria present, OR the message is clearly spam, a student inquiry, a recruiter pitch, or irrelevant.\n\nSTRICTNESS:\n- Do not infer signals that aren't stated or strongly implied. \"We need automation\" alone is not a specific solution request.\n- Ambiguous cases lean toward the lower score, not the higher score.\n- Criterion 3 must be evaluated from the ENRICHMENT DATA block only. Never from the lead message.\n\nOUTPUT FORMAT:\nReturn JSON with this exact structure:\n{\n  \"score\": \"high\" | \"medium\" | \"low\",\n  \"criteria_met\": [\"criterion name 1\", \"criterion name 2\", ...],\n  \"reasoning\": \"List which criteria were met (or state that none were met), then justify the score in 1-2 sentences.\"\n}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        416,
+        0
+      ],
+      "id": "df65ae1d-14d8-4fb4-860b-8f0be801aa90",
+      "name": "Qualify Lead"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-20b",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        64,
+        208
+      ],
+      "id": "78b9c278-50d0-4cad-8edd-783d062e71fd",
+      "name": "Groq Chat Model",
+      "credentials": {
+        "groqApi": {
+          "id": "9hnjfZkpr84HmloQ",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"score\": \"high\",\n  \"criteria_met\": [\"decision-maker role\", \"budget or approval\"],\n  \"reasoning\": \"Criteria met: decision-maker role (CTO), budget or approval (approved budget). Score is high because 2 or more criteria were met.\"\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        384,
+        208
+      ],
+      "id": "c68583b8-17ea-4f1a-aa53-eb1ebf0d015d",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO leads (name, email, company, message, score, criteria_met, reasoning, enrichment_summary)\nVALUES (\n  '{{ $json.name }}',\n  '{{ $json.email }}',\n  '{{ $json.company }}',\n  '{{ $json.message }}',\n  '{{ $json.score }}',\n  {{ $json.criteria_met_sql }},\n  '{{ $json.reasoning }}',\n  '{{ $json.enrichment_summary }}'::jsonb\n);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        960,
+        0
+      ],
+      "id": "1edfee5a-7fe3-4c08-96e5-71e058feb34c",
+      "name": "Log Lead",
+      "credentials": {
+        "postgres": {
+          "id": "IbRwiLg11WhiBmNv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apify.com/v2/acts/miccho27~company-data-enricher/run-sync-get-dataset-items",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"domains\": [\"{{ $json.body.email.split('@')[1] }}\"],\n  \"enrichmentMode\": \"enrich\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        208,
+        0
+      ],
+      "id": "3b9c7f4b-cba8-4b44-b562-e50d5c563d00",
+      "name": "Enrich Company",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "mAACrP7SLB74DdEi",
+          "name": "Apify API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Define esc first — used by both the guard and the main logic\nconst esc = (s) => String(s || '').replace(/'/g, \"''\");\n\n// Pull upstream data once — used in both branches\nconst lead = $('Webhook').first().json.body;\nconst enrichment = $('Enrich Company').first().json;\n\n// Build enrichment summary — same shape in both branches\nconst enrichmentSummary = JSON.stringify({\n  social_links: enrichment.socialLinks || null,\n  domain_age: enrichment.domainInfo?.domainAge || null,\n  technologies: Array.isArray(enrichment.technologies) ? enrichment.technologies : [],\n  rdap_registration: enrichment.domainInfo?.registrationDate || null\n});\n\n// Pull raw LLM output\nconst rawOutput = $input.first().json.output;\n\n// Guard: empty output means the LLM failed (transient error, rate limit, etc.)\nif (!rawOutput || String(rawOutput).trim() === '') {\n  return {\n    json: {\n      name: esc(lead.name),\n      email: esc(lead.email),\n      company: esc(lead.company),\n      message: esc(lead.message),\n      score: 'low',\n      criteria_met_sql: 'ARRAY[]::text[]',\n      reasoning: 'Classification failed: LLM returned empty response. Manual review required.',\n      enrichment_summary: enrichmentSummary\n    }\n  };\n}\n\n// Strip markdown fences and preamble that LLMs sometimes add\nconst cleaned = String(rawOutput)\n  .trim()\n  .replace(/^```(?:json)?\\s*/i, '')\n  .replace(/\\s*```$/, '')\n  .trim();\n\nconst jsonMatch = cleaned.match(/\\{[\\s\\S]*\\}/);\nconst jsonString = jsonMatch ? jsonMatch[0] : cleaned;\n\nconst parsed = JSON.parse(jsonString);\n\n// Normalize criteria_met to Title Case\nconst criteriaMetRaw = Array.isArray(parsed.criteria_met) ? parsed.criteria_met : [];\nconst criteriaMet = criteriaMetRaw.map(c =>\n  String(c).toLowerCase().replace(/\\b\\w/g, l => l.toUpperCase())\n);\n\n// Build the Postgres array literal\nconst criteriaArrayLiteral = criteriaMet.length > 0\n  ? 'ARRAY[' + criteriaMet.map(c => `'${esc(c)}'`).join(',') + ']::text[]'\n  : 'ARRAY[]::text[]';\n\nreturn {\n  json: {\n    name: esc(lead.name),\n    email: esc(lead.email),\n    company: esc(lead.company),\n    message: esc(lead.message),\n    score: parsed.score,\n    criteria_met_sql: criteriaArrayLiteral,\n    reasoning: esc(parsed.reasoning),\n    enrichment_summary: enrichmentSummary\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        0
+      ],
+      "id": "d83ec8a1-5851-4cbc-9260-28dce7ad998e",
+      "name": "Parse Agent Output"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Enrich Company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Qualify Lead",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        []
+      ]
+    },
+    "Qualify Lead": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Company": {
+      "main": [
+        [
+          {
+            "node": "Qualify Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Agent Output": {
+      "main": [
+        [
+          {
+            "node": "Log Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "cd6f8f27-afe3-41b9-acee-ccb41eae3d3a",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "daae1a4cfdc8cedef8e4c0a51dea5436df6634717b0af4368ce8236758877cd8"
+  },
+  "id": "XWLNnowuqHuCRFBX",
+  "tags": []
+}

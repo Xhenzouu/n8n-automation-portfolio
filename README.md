@@ -2,6 +2,23 @@
 
 Production-ready automation workflows built with self-hosted n8n. Integrates GitHub, Gmail, Groq (LLM), Google Gemini (embeddings), Supabase (PostgreSQL + pgvector), and Telegram.
 
+## Quick Tour
+
+Six production-quality workflows. Each teaches a distinct architecture pattern. Full details below.
+
+| # | Workflow | Pattern |
+|---|----------|---------|
+| 1 | GitHub Good First Issue Notifier | Scheduled poll → filter → email |
+| 2 | AI Log Classifier | Webhook → LLM classify → conditional Telegram alert |
+| 3 | Error Handler | Cross-workflow failure notification |
+| 4 | AF Homes Inquiry Intake | RAG pipeline with vector search and grounded reply drafting |
+| 5 | AI Lead Qualification Agent | Deterministic LLM scoring with machine-readable audit trail |
+| 6 | Invoice Processing Pipeline | PDF extraction + 3-branch validation with per-status routing |
+
+**Stack:** n8n (self-hosted) · Groq · Google Gemini · Apify · Supabase (PostgreSQL + pgvector) · Telegram · Gmail · GitHub REST API
+
+---
+
 ## Projects
 
 ### 1. GitHub "Good First Issue" Notifier

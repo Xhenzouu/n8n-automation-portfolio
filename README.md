@@ -210,6 +210,73 @@ The `Company Maturity` criterion fires only when enrichment supports it. When en
 
 ---
 
+### 6. Invoice Processing Pipeline (Groq + Supabase + Telegram)
+
+**Status:** v1.0.0 published. OCR support and amount formatting deferred to roadmap.
+
+Event-driven invoice processing pipeline: receives PDF invoices via Telegram, extracts text from the PDF, uses an LLM to pull structured fields, validates the vendor against a reference table, classifies the invoice as valid / suspicious / invalid, and routes to one of three branches with distinct Postgres persistence and Telegram notifications.
+
+**Problem it solves:** Manual invoice entry is slow and error-prone. Vendor fraud, duplicate submissions, and typo'd amounts go unnoticed until they reach accounting. This workflow automates first-pass invoice intake with a rule-based validation layer, produces an audit trail for every submission (including rejections), and alerts the submitter with context-specific messaging.
+
+**Architecture:**
+
+```
+Telegram Trigger (receives PDF document)
+→ Extract PDF Text (read text layer from binary)
+→ Build Groq Body (Code node, precompute JSON body)
+→ Extract Fields with Groq (structured field extraction)
+→ Parse Invoice Fields (Code node, JSON.parse + validate schema)
+→ Look Up Vendor (Postgres SELECT against vendors table)
+→ Compute Validation Status (Code node, apply rules)
+→ Build Invoice SQL (Code node, precompute SQL string with null handling)
+→ Route by Status (Switch on status field)
+    ├── valid       → Insert Valid Invoice (Postgres) → Send Valid Confirmation (Telegram)
+    ├── suspicious  → Insert Suspicious Invoice (Postgres) → Send Suspicious Warning (Telegram)
+    └── invalid     → Insert Invalid Invoice (Postgres) → Send Rejection (Telegram)
+```
+
+**Key implementation details:**
+
+- **Telegram as input surface.** The Telegram Trigger node receives PDF documents directly. No file upload endpoint needed. The trigger's "Download Images/Files" option fetches the binary and exposes it as `binary.data`.
+- **PDF text extraction before AI.** `Extract from PDF` reads the text layer natively. The AI Agent receives plain text, not binary. This eliminates the multimodal complexity and keeps the extraction step deterministic.
+- **Structured field extraction with Groq.** Fields extracted: `vendor_name`, `invoice_number`, `amount`, `currency`, `invoice_date`, `due_date`, `line_items_summary`. `response_format: json_object` forces valid JSON. Temperature 0 for determinism.
+- **Vendor validation against a reference table.** The `vendors` table contains the canonical list of approved vendors. Lookup is case-insensitive and escapes SQL metacharacters to prevent injection from LLM-extracted text.
+- **Three-branch classification with explicit rules.** Valid = vendor found, active, positive amount, valid currency, coherent dates. Suspicious = valid vendor but one of: amount exceeds threshold, non-PHP currency, dates in wrong order, or future invoice date. Invalid = vendor not found, inactive, or missing required fields. Precedence: invalid > suspicious > valid.
+- **Machine-readable audit trail.** Every invoice is written to the `invoices` table regardless of status. The `status_reasons` array documents exactly why an invoice was flagged. Reviews and audits can query by status without re-running the workflow.
+- **Precomputed SQL with null handling.** The `Build Invoice SQL` Code node uses `esc()` and `num()` helper functions that emit the SQL keyword `NULL` unquoted for null values. This replaced inline string interpolation, which broke on the DATE columns when the LLM extracted null for `invoice_date` or `due_date`.
+- **Three-branch routing.** The Switch node reads a `status` field computed by the upstream Code node. Each branch has its own Postgres Insert and Telegram Send, with distinct message text.
+
+**Verified behavior (2026-09-24):**
+
+Three test invoices processed end-to-end:
+
+| Input | Vendor lookup | Classification | Result |
+|-------|--------------|----------------|--------|
+| Acme Office Supplies, PHP 15,750 | Found, active | valid | Inserted, confirmation sent |
+| Acme Office Supplies, USD 250 | Found, active | suspicious (non-PHP currency) | Inserted, warning sent |
+| Fictional Corp Pty Ltd., USD 500 | Not found | invalid (vendor not found) | Inserted, rejection sent |
+
+Supabase `invoices` table contains one row per status after cleanup, confirming all three branches persist data.
+
+**Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Telegram Bot API · Supabase (PostgreSQL)
+
+**Estimated impact:** Replaces manual first-pass invoice triage. Reduces per-invoice processing from ~5 minutes of manual entry and validation to under 10 seconds of automated processing plus a Telegram review notification for suspicious and invalid cases.
+
+**Gotchas specific to this workflow:**
+
+- **The `Extract from PDF` node fails silently on scanned PDFs.** Image-only PDFs return an empty string or garbled text instead of an error. There is no validation that the extracted text is meaningful. Workflows handling PDFs should validate the extraction output before passing it downstream. For scanned documents, add an OCR step with a separate tool.
+- **The `Extract from PDF` node returns more than just text.** Output includes PDF metadata: `numpages`, `info.PDFFormatVersion`, `info.Author`, `info.Creator`, `info.Language`, plus the `text` field. Useful for logging, but be aware the output shape is larger than expected.
+- **`Extract from File` does not validate the extracted text.** A 117 kB text-layer PDF and a corrupted PDF both produce output the node doesn't validate. Add downstream checks if PDF quality matters.
+- **Nested field access on external API responses silently returns undefined.** The `Extract from PDF` node returns metadata at `info.Author` and `info.Creator` (nested), while the text is at the top-level `text` field. Verify field paths before referencing them.
+- **Multi-line PDF text breaks inline JSON body interpolation.** The same trap from Project 4 and Project 5. The fix is a `Build Groq Body` Code node that precomputes the full JSON body via `JSON.stringify()` and sends it as Raw. Same pattern across all three workflows.
+- **Nullable fields in SQL string interpolation produce `'null'` (quoted string) instead of the SQL keyword `NULL`.** Postgres rejects `'null'` for DATE columns. Fix: precompute the full INSERT as a string in a Code node with helper functions that emit `NULL` unquoted for null values.
+- **`$json` after a Postgres Insert node refers to `{success: true}`, not the input data.** All downstream references (Telegram message fields) must reach back to an earlier node via `$('Node Name').first().json.field`. Fourth occurrence of this trap across the portfolio.
+- **Telegram Trigger uses webhooks, which require a publicly reachable HTTPS URL in production.** Test mode uses n8n's tunnel; production requires a VPS, Cloudflare Tunnel, or a similar stable ingress. The n8n `--tunnel` flag is deprecated and non-functional in v2.
+- **The `Always Output Data` setting is required on Postgres nodes whose SELECT may return zero rows.** Without it, an empty result terminates the workflow before downstream branches can handle the "not found" case.
+- **Groq's `response_format: json_object` mode does not accept a JSON Schema.** The schema must be communicated via the prompt. Unlike OpenAI's Structured Outputs, Groq validates only that output is valid JSON, not that it matches a specific shape.
+
+---
+
 ## Repo Structure
 
 ```

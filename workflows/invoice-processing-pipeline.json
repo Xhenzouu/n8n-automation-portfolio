@@ -1,0 +1,527 @@
+{
+  "name": "Invoice Processing Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {
+          "download": true
+        }
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "4039f8bb-1fe3-416d-9db0-75d5e5ab76b1",
+      "name": "Telegram Trigger",
+      "webhookId": "fe373522-26cb-445d-b477-44bf27abcf28",
+      "credentials": {
+        "telegramApi": {
+          "id": "tBKfymaqPqy1NcNv",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        208,
+        0
+      ],
+      "id": "c8ce5c47-6b4d-44b9-a421-a7cd1c0421e7",
+      "name": "Extract PDF Text"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body_string }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        624,
+        0
+      ],
+      "id": "ea573fb1-111d-4bde-874f-87b52953643e",
+      "name": "Extract Fields with Groq",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "dSoPhZd45do4pT9v",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the Groq response\nconst groqResponse = $input.first().json;\n\n// Extract the JSON string from choices[0].message.content\nconst contentString = groqResponse.choices[0].message.content;\n\n// Strip markdown fences if present (defensive)\nconst cleaned = String(contentString)\n  .trim()\n  .replace(/^```(?:json)?\\s*/i, '')\n  .replace(/\\s*```$/, '')\n  .trim();\n\n// Extract the first JSON object\nconst jsonMatch = cleaned.match(/\\{[\\s\\S]*\\}/);\nconst jsonString = jsonMatch ? jsonMatch[0] : cleaned;\n\nconst parsed = JSON.parse(jsonString);\n\n// Validate required fields exist (defensive, in case Groq returns partial)\nconst requiredFields = ['vendor_name', 'invoice_number', 'amount', 'currency', 'invoice_date', 'due_date', 'line_items_summary'];\nconst missingFields = requiredFields.filter(f => !(f in parsed));\n\nif (missingFields.length > 0) {\n  // Log missing fields but continue — downstream validation handles nulls\n  console.log('Missing fields from extraction:', missingFields);\n}\n\nreturn {\n  json: {\n    vendor_name: parsed.vendor_name || null,\n    invoice_number: parsed.invoice_number || null,\n    amount: parsed.amount != null ? Number(parsed.amount) : null,\n    currency: parsed.currency || null,\n    invoice_date: parsed.invoice_date || null,\n    due_date: parsed.due_date || null,\n    line_items_summary: parsed.line_items_summary || null,\n    extraction_missing_fields: missingFields.length > 0 ? missingFields : null\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        832,
+        0
+      ],
+      "id": "f705e398-88f6-475f-9af2-cd35652ccc3f",
+      "name": "Parse Invoice Fields"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get PDF text from the previous node\nconst pdfText = $input.first().json.text;\n\n// Defensive: if text is empty, return a sentinel so downstream handles it\nif (!pdfText || String(pdfText).trim() === '') {\n  return {\n    json: {\n      body_string: JSON.stringify({\n        error: 'empty_pdf_text',\n        message: 'Extract from PDF returned empty text. PDF may be scanned or image-only.'\n      })\n    }\n  };\n}\n\n// Build the full Groq request body as an object\nconst body = {\n  model: 'openai/gpt-oss-20b',\n  messages: [\n    {\n      role: 'system',\n      content: 'You extract structured fields from invoice text. Return ONLY valid JSON matching the requested schema. If a field is not present in the text, use null. Do not invent values. Do not add explanation outside the JSON.'\n    },\n    {\n      role: 'user',\n      content: `Extract these fields from the invoice text below and return them as JSON:\n\n- vendor_name (string)\n- invoice_number (string)\n- amount (number, without currency symbols or thousands separators)\n- currency (string, 3-letter ISO code like USD, PHP, EUR)\n- invoice_date (string, ISO format YYYY-MM-DD)\n- due_date (string, ISO format YYYY-MM-DD)\n- line_items_summary (string, one sentence summarizing what was billed)\n\nReturn this exact structure:\n{\n  \"vendor_name\": \"...\",\n  \"invoice_number\": \"...\",\n  \"amount\": 0.00,\n  \"currency\": \"...\",\n  \"invoice_date\": \"YYYY-MM-DD\",\n  \"due_date\": \"YYYY-MM-DD\",\n  \"line_items_summary\": \"...\"\n}\n\nInvoice text:\n${pdfText}`\n    }\n  ],\n  response_format: { type: 'json_object' },\n  temperature: 0\n};\n\n// Return as a single string, ready for the HTTP Request node\nreturn {\n  json: {\n    body_string: JSON.stringify(body)\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        0
+      ],
+      "id": "ced5b4c5-f3ab-475f-a26c-a576e93288c3",
+      "name": "Build Groq Body"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  id,\n  name,\n  tax_id,\n  contact_email,\n  is_active\nFROM vendors\nWHERE LOWER(name) = LOWER('{{ $json.vendor_name.replace(/'/g, \"''\") }}')\nLIMIT 1;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1040,
+        0
+      ],
+      "id": "454031fa-01a8-46f5-9033-6861866d7d64",
+      "name": "Look Up Vendor",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "IbRwiLg11WhiBmNv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pull upstream data\n// Look Up Vendor output is either [{vendor fields}] or [{}]\nconst vendor = $input.first().json;\nconst invoice = $('Parse Invoice Fields').first().json;\n\nconst reasons = [];\n\n// ---------- INVALID checks ----------\nlet isInvalid = false;\n\nconst vendorFound = vendor.id != null;\nif (!vendorFound) {\n  reasons.push('Vendor not found in database');\n  isInvalid = true;\n}\n\nif (vendorFound && vendor.is_active === false) {\n  reasons.push('Vendor exists but is inactive');\n  isInvalid = true;\n}\n\nif (invoice.amount == null || typeof invoice.amount !== 'number' || invoice.amount <= 0) {\n  reasons.push('Amount is missing, non-numeric, or not positive');\n  isInvalid = true;\n}\n\nif (!invoice.currency || typeof invoice.currency !== 'string' || invoice.currency.length !== 3) {\n  reasons.push('Currency is missing or not a 3-letter code');\n  isInvalid = true;\n}\n\nif (!invoice.invoice_date) {\n  reasons.push('Invoice date is missing');\n  isInvalid = true;\n}\n\nif (!invoice.due_date) {\n  reasons.push('Due date is missing');\n  isInvalid = true;\n}\n\n// If invalid, short-circuit. Don't also flag suspicious reasons.\nlet status = 'valid';\nif (isInvalid) {\n  status = 'invalid';\n} else {\n  // ---------- SUSPICIOUS checks ----------\n  const invoiceDate = new Date(invoice.invoice_date);\n  const dueDate = new Date(invoice.due_date);\n  const today = new Date();\n\n  if (invoice.amount > 100000) {\n    reasons.push(`Amount exceeds threshold (${invoice.amount} > 100000)`);\n  }\n\n  if (dueDate < invoiceDate) {\n    reasons.push('Due date is earlier than invoice date');\n  }\n\n  if (invoice.currency !== 'PHP') {\n    reasons.push(`Non-PHP currency (${invoice.currency}) requires manual review`);\n  }\n\n  if (invoiceDate > today) {\n    reasons.push('Invoice date is in the future');\n  }\n\n  if (reasons.length > 0) {\n    status = 'suspicious';\n  }\n}\n\n// If status is still valid and no reasons accumulated, note that for audit\nif (status === 'valid' && reasons.length === 0) {\n  reasons.push('All validation checks passed');\n}\n\nreturn {\n  json: {\n    // Pass through vendor info\n    vendor_id: vendor.id || null,\n    vendor_name: vendor.name || invoice.vendor_name,\n    is_active: vendor.is_active || null,\n\n    // Pass through invoice fields\n    invoice_number: invoice.invoice_number,\n    amount: invoice.amount,\n    currency: invoice.currency,\n    invoice_date: invoice.invoice_date,\n    due_date: invoice.due_date,\n    line_items_summary: invoice.line_items_summary,\n    extraction_missing_fields: invoice.extraction_missing_fields,\n\n    // Validation output\n    status: status,\n    status_reasons: reasons\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        0
+      ],
+      "id": "9499e50c-1e64-4792-bcd9-06e7580a9b9d",
+      "name": "Compute Validation Status"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "valid",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "1df1d5ed-00a7-4bd9-b9a2-bdc21804dddb"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "valid"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "c234845a-1c88-4596-b243-b65ef96f9ba0",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "suspicious",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "suspicious"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "03dc8b05-fd67-464b-aa60-dd3f33b6ddb6",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "invalid",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "invalid"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1648,
+        0
+      ],
+      "id": "9f8b03ea-7450-4174-b24e-b870938fca28",
+      "name": "Route by Status"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $('Build Invoice SQL').first().json.sqlQuery }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1872,
+        -112
+      ],
+      "id": "3daaeb7e-5186-4e93-b036-fcb02c6ae271",
+      "name": "Insert Valid Invoice",
+      "credentials": {
+        "postgres": {
+          "id": "IbRwiLg11WhiBmNv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').first().json.message.chat.id }}",
+        "text": "=Invoice processed\n\nInvoice: {{ $('Compute Validation Status').first().json.invoice_number }}\nVendor: {{ $('Compute Validation Status').first().json.vendor_name }}\nAmount: {{ $('Compute Validation Status').first().json.currency }} {{ $('Compute Validation Status').first().json.amount }}\nDate: {{ $('Compute Validation Status').first().json.invoice_date }}\nDue: {{ $('Compute Validation Status').first().json.due_date }}\n\nStatus: {{ $('Compute Validation Status').first().json.status }}\n\nSummary: {{ $('Compute Validation Status').first().json.line_items_summary }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2080,
+        -112
+      ],
+      "id": "e1c3dcaa-2075-4030-b95c-ae388556c8c9",
+      "name": "Send Valid Confirmation",
+      "webhookId": "28a08f85-be2d-4e22-b2d9-48d40c9e0f83",
+      "credentials": {
+        "telegramApi": {
+          "id": "tBKfymaqPqy1NcNv",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $('Build Invoice SQL').first().json.sqlQuery }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1872,
+        48
+      ],
+      "id": "0663da59-3244-426e-b808-b1a2506f80bc",
+      "name": "Insert Suspicious Invoice",
+      "credentials": {
+        "postgres": {
+          "id": "IbRwiLg11WhiBmNv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').first().json.message.chat.id }}",
+        "text": "=Invoice flagged for review  Invoice: {{ $('Compute Validation Status').first().json.invoice_number }} Vendor: {{ $('Compute Validation Status').first().json.vendor_name }} Amount: {{ $('Compute Validation Status').first().json.currency }} {{ $('Compute Validation Status').first().json.amount }} Date: {{ $('Compute Validation Status').first().json.invoice_date }} Due: {{ $('Compute Validation Status').first().json.due_date }}  Status: suspicious Reasons: {{ $('Compute Validation Status').first().json.status_reasons.join('; ') }}  Manual review required before processing.",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2080,
+        48
+      ],
+      "id": "4ff54ed4-a492-4058-8622-41b297d8913a",
+      "name": "Send Suspicious Warning",
+      "webhookId": "1843425c-82aa-4bc3-a48c-f07e29e7a099",
+      "credentials": {
+        "telegramApi": {
+          "id": "tBKfymaqPqy1NcNv",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $('Build Invoice SQL').first().json.sqlQuery }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1872,
+        224
+      ],
+      "id": "5426e11a-c373-4f2d-8214-4c6be3383e4e",
+      "name": "Insert Invalid Invoice",
+      "credentials": {
+        "postgres": {
+          "id": "IbRwiLg11WhiBmNv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').first().json.message.chat.id }}",
+        "text": "=Invoice rejected  Invoice: {{ $('Compute Validation Status').first().json.invoice_number \n\n 'unknown' }} Vendor: {{ $('Compute Validation Status').first().json.vendor_name \n\n 'unknown vendor' }} Amount: {{ $('Compute Validation Status').first().json.currency \n\n '?' }} {{ $('Compute Validation Status').first().json.amount \n\n 'unknown' }}  Status: invalid Reasons: {{ $('Compute Validation Status').first().json.status_reasons.join('; ') }}  This invoice was not processed. Fix the issues and resubmit.",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2080,
+        224
+      ],
+      "id": "f4b22898-2c51-42d4-b27a-2cec268feace",
+      "name": "Send Rejection",
+      "webhookId": "b9c9948e-d85b-4a9c-a1c6-7b0d39eeb2d4",
+      "credentials": {
+        "telegramApi": {
+          "id": "tBKfymaqPqy1NcNv",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Helper: escape strings and handle nulls for SQL\nconst esc = (v) => {\n  if (v === null || v === undefined) return 'NULL';\n  return \"'\" + String(v).replace(/'/g, \"''\") + \"'\";\n};\n\n// Helper: handle numeric nulls\nconst num = (v) => (v === null || v === undefined ? 'NULL' : v);\n\n// Pull the input item — preserves all fields from Compute Validation Status\nconst input = $input.first().json;\n\n// Build the SQL string with proper NULLs\nconst sql = `\nINSERT INTO invoices (\n  vendor_id, vendor_name, invoice_number, amount, currency,\n  invoice_date, due_date, line_items_summary, status, status_reasons, source_chat_id\n)\nVALUES (\n  ${num(input.vendor_id)},\n  ${esc(input.vendor_name)},\n  ${esc(input.invoice_number)},\n  ${num(input.amount)},\n  ${esc(input.currency)},\n  ${esc(input.invoice_date)},\n  ${esc(input.due_date)},\n  ${esc(input.line_items_summary)},\n  ${esc(input.status)},\n  ARRAY[${input.status_reasons.map(r => esc(r)).join(',')}]::text[],\n  ${esc($('Telegram Trigger').first().json.message.chat.id)}\n);\n`;\n\nreturn {\n  json: {\n    ...input,\n    sqlQuery: sql\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1456,
+        0
+      ],
+      "id": "046fcdc8-300c-4abf-aeac-07c9d1075927",
+      "name": "Build Invoice SQL"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract PDF Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDF Text": {
+      "main": [
+        [
+          {
+            "node": "Build Groq Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Fields with Groq": {
+      "main": [
+        [
+          {
+            "node": "Parse Invoice Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Groq Body": {
+      "main": [
+        [
+          {
+            "node": "Extract Fields with Groq",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Invoice Fields": {
+      "main": [
+        [
+          {
+            "node": "Look Up Vendor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Look Up Vendor": {
+      "main": [
+        [
+          {
+            "node": "Compute Validation Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Validation Status": {
+      "main": [
+        [
+          {
+            "node": "Build Invoice SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Status": {
+      "main": [
+        [
+          {
+            "node": "Insert Valid Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Suspicious Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Insert Invalid Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Valid Invoice": {
+      "main": [
+        [
+          {
+            "node": "Send Valid Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Suspicious Invoice": {
+      "main": [
+        [
+          {
+            "node": "Send Suspicious Warning",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Invalid Invoice": {
+      "main": [
+        [
+          {
+            "node": "Send Rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Invoice SQL": {
+      "main": [
+        [
+          {
+            "node": "Route by Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "51ed8a86-d188-49a4-ba7c-1b3235a27da2",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "daae1a4cfdc8cedef8e4c0a51dea5436df6634717b0af4368ce8236758877cd8"
+  },
+  "id": "QMoJvKnNN1SSrU6P",
+  "tags": []
+}

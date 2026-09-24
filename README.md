@@ -28,9 +28,9 @@ Schedule Trigger (weekday 9AM)
 - **Empty-result handling:** Filter node outputs 0 items when nothing matches, which structurally prevents Gmail from sending. No email sent = no noise.
 - **Error handling:** Linked to a dedicated error workflow that emails the failure details.
 
-**Estimated impact:** ~5 minutes saved per manual check × ~22 weekdays = **~110 minutes/month saved**.
-
 **Stack:** n8n (self-hosted) · GitHub REST API · Gmail API (OAuth2)
+
+**Estimated impact:** ~5 minutes saved per manual check × ~22 weekdays = **~110 minutes/month saved**.
 
 ---
 
@@ -63,6 +63,8 @@ Webhook (POST /log-classifier)
 
 **Stack:** n8n (self-hosted) · Groq API · Supabase (PostgreSQL) · Telegram Bot API
 
+**Estimated impact:** Replaces manual log review. Critical alerts surface in seconds instead of during the next check.
+
 ---
 
 ### 3. Error Handler (Supporting Workflow)
@@ -78,7 +80,11 @@ Error Trigger (fires on linked workflow failure)
 
 **Email includes:** workflow name, error message, last node executed, and a link to the failed execution in n8n.
 
+**Problem it solves:** Silent workflow failures go unnoticed until a stakeholder asks why something didn't happen. This workflow surfaces failures within minutes, with enough context to debug without re-running the workflow.
+
 **Why it matters:** Silent automation failures are worse than no automation.
+
+**Estimated impact:** Catches silent failures within minutes instead of hours.
 
 ---
 
@@ -126,6 +132,8 @@ Webhook (POST /af-homes-inquiry)
 Every specific number was sourced from the retrieved FAQ chunks — none invented.
 
 **Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Google Gemini (`gemini-embedding-001`) · Supabase (PostgreSQL + pgvector) · Telegram Bot API
+
+**Estimated impact:** Replaces manual inquiry triage. Grounded draft replies reduce first-response time from minutes of drafting to seconds of review.
 
 ---
 
@@ -185,6 +193,8 @@ Three identical runs of a high-signal lead with enrichment (`juan@example.com` �
 The `Company Maturity` criterion fires only when enrichment supports it. When enrichment returns empty, the criterion stays absent and the score reflects only the signals present in the message.
 
 **Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Apify (`company-data-enricher`) · Supabase (PostgreSQL) · LangChain AI Agent node
+
+**Estimated impact:** Reduces lead triage from ~10 minutes of manual review to ~30 seconds per lead. Deterministic scoring eliminates the review-and-correct cycle that inconsistent LLM output forces.
 
 **Gotchas specific to this workflow:**
 

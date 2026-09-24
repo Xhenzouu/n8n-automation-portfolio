@@ -311,16 +311,23 @@ package.json
 ### Prerequisites
 
 - n8n (self-hosted — install via npm or Docker)
-- **GitHub notifier:** GitHub PAT with `public_repo` scope; Gmail OAuth2 credentials
-- **AI Log Classifier:** Groq API key; Supabase project; Telegram bot token + chat ID
-- **AF Homes Inquiry Intake:** Groq API key; Gemini API key; Supabase project with pgvector; Telegram bot token + chat ID
+- A Supabase project (free tier sufficient) with the extensions and tables listed below
+- Free API keys: [Groq](https://console.groq.com/keys), [Google Gemini](https://aistudio.google.com/apikey), [Apify](https://console.apify.com/account/integrations)
+- A Telegram bot (create via @BotFather) with the bot token and your chat ID
+- GitHub Personal Access Token with `public_repo` scope
+- Gmail OAuth2 credentials (Google Cloud project with Gmail API enabled)
 
 ### Importing the workflows
 
 1. In n8n, click **Add workflow** → **Import from File**
 2. Select the JSON from `workflows/`
 3. Re-link credentials (see credential list below)
-4. Update placeholder values (`YOUR_PROJECT_REF`, `YOUR_TELEGRAM_CHAT_ID`, `YOUR_GROQ_API_KEY`, `YOUR_GEMINI_API_KEY`)
+4. Update placeholder values in each workflow:
+   - `YOUR_PROJECT_REF` — your Supabase project ref
+   - `YOUR_TELEGRAM_CHAT_ID` — your numeric chat ID
+   - `YOUR_GROQ_API_KEY` — your Groq key
+   - `YOUR_GEMINI_API_KEY` — your Gemini key
+   - `YOUR_APIFY_TOKEN` — your Apify API token
 5. **Publish** each workflow
 
 ### Required credentials
@@ -329,12 +336,15 @@ package.json
 |-----------|------|---------|
 | GitHub account | Access Token | GitHub notifier |
 | Gmail account | OAuth2 | GitHub notifier, Error handler |
-| Postgres account | Postgres | AI Log Classifier, AF Homes Intake |
-| Telegram account | Telegram API | AI Log Classifier, AF Homes Intake, notify-telegram |
-| Header Auth (Groq) | Header Auth, `Authorization: Bearer gsk_...` | AI Log Classifier, AF Homes Intake |
+| Postgres account | Postgres | AI Log Classifier, AF Homes Intake, Lead Qualification, Invoice Processing |
+| Telegram account | Telegram API | All workflows using notifications |
+| Header Auth (Groq) | Header Auth, `Authorization: Bearer gsk_...` | AI Log Classifier, AF Homes Intake, Lead Qualification, Invoice Processing |
 | Header Auth (Gemini) | Header Auth, `x-goog-api-key: ...` | AF Homes Intake |
+| Header Auth (Apify) | Header Auth, `Authorization: Bearer apify_api_...` | Lead Qualification |
 
 ### Supabase schema
+
+Run all of these in the Supabase SQL Editor, in order.
 
 ```sql
 -- AI Log Classifier
@@ -361,7 +371,6 @@ CREATE TABLE faq_chunks (
     embedding vector(1536),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
-
 CREATE INDEX idx_faq_chunks_embedding ON faq_chunks
   USING hnsw (embedding vector_cosine_ops)
   WITH (m = 16, ef_construction = 64);
@@ -384,9 +393,6 @@ CREATE TABLE inquiries (
 CREATE INDEX idx_inquiries_category ON inquiries(category);
 CREATE INDEX idx_inquiries_priority ON inquiries(priority);
 CREATE INDEX idx_inquiries_created_at ON inquiries(created_at DESC);
-
-ALTER TABLE faq_chunks ENABLE ROW LEVEL SECURITY;
-ALTER TABLE inquiries ENABLE ROW LEVEL SECURITY;
 
 -- RPC function for RAG retrieval
 CREATE OR REPLACE FUNCTION match_faq_chunks(
@@ -411,19 +417,77 @@ AS $$
   ORDER BY faq_chunks.embedding <=> query_embedding
   LIMIT match_count;
 $$;
+
+-- AI Lead Qualification Agent
+CREATE TABLE leads (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  company TEXT,
+  message TEXT NOT NULL,
+  score TEXT NOT NULL CHECK (score IN ('high', 'medium', 'low')),
+  criteria_met TEXT[],
+  reasoning TEXT NOT NULL,
+  enrichment_summary JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX idx_leads_score ON leads(score);
+CREATE INDEX idx_leads_created_at ON leads(created_at DESC);
+
+-- Invoice Processing Pipeline
+CREATE TABLE vendors (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  tax_id TEXT,
+  contact_email TEXT,
+  is_active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE invoices (
+  id BIGSERIAL PRIMARY KEY,
+  vendor_id BIGINT REFERENCES vendors(id),
+  vendor_name TEXT NOT NULL,
+  invoice_number TEXT,
+  amount NUMERIC(12, 2),
+  currency VARCHAR(3),
+  invoice_date DATE,
+  due_date DATE,
+  line_items_summary TEXT,
+  status VARCHAR(20) NOT NULL CHECK (status IN ('valid', 'suspicious', 'invalid')),
+  status_reasons TEXT[],
+  source_chat_id TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+CREATE INDEX idx_invoices_status ON invoices(status);
+CREATE INDEX idx_invoices_vendor_id ON invoices(vendor_id);
+CREATE INDEX idx_invoices_created_at ON invoices(created_at DESC);
+
+-- Enable RLS on all tables
+ALTER TABLE error_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE faq_chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inquiries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE leads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vendors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ```
 
-### Seeding the FAQ vector store
+### Seeding the databases
 
-The `scripts/` folder contains a one-off seed utility. Ingest runs outside n8n because it needs filesystem access to read local markdown files and runs once per corpus update, not on every workflow execution. Real RAG systems separate ingest from query.
+Two one-off seed scripts live in `scripts/`. Both run outside n8n because they need filesystem access and execute once per corpus update, not per workflow execution.
 
 ```bash
 # From repo root
 npm install
+
+# Seed FAQ vector store (Project 4)
 node scripts/seed-faq.js
+
+# Seed vendor reference table (Project 6)
+# Run scripts/seed-vendors.sql in the Supabase SQL Editor
 ```
 
-Requires `.env` at repo root:
+FAQ seeding requires `.env` at repo root:
 
 ```
 GEMINI_API_KEY=your_key_here
@@ -431,7 +495,7 @@ SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your_service_role_key_here
 ```
 
-### Testing
+### Testing each workflow
 
 **GitHub notifier:** Create a test issue with the `good first issue` label, click Execute Workflow, check your inbox.
 
@@ -449,13 +513,29 @@ curl.exe -X POST http://localhost:5678/webhook/log-classifier -H "Content-Type: 
 curl.exe -X POST http://localhost:5678/webhook/af-homes-inquiry -H "Content-Type: application/json" --data-binary "@$env:TEMP\af-homes-test.json"
 ```
 
-Verify in Supabase:
+**AI Lead Qualification Agent:**
+
+```powershell
+[System.IO.File]::WriteAllText("$env:TEMP\lead-test.json", '{"name": "Maria Santos", "email": "maria@acme.ph", "company": "Acme Corp", "message": "We need an enterprise automation solution for our sales team."}')
+curl.exe -X POST http://localhost:5678/webhook/lead-qualifier -H "Content-Type: application/json" --data-binary "@$env:TEMP\lead-test.json"
+```
+
+**Invoice Processing Pipeline:** Send a PDF invoice to your Telegram bot. The workflow fires on message receipt.
+
+Verify each workflow's output:
 
 ```sql
-SELECT id, category, priority, draft_reply, retrieved_sources
-FROM inquiries
-ORDER BY created_at DESC
-LIMIT 1;
+-- AI Log Classifier
+SELECT id, severity, summary FROM error_logs ORDER BY created_at DESC LIMIT 1;
+
+-- AF Homes Inquiry Intake
+SELECT id, category, priority, draft_reply, retrieved_sources FROM inquiries ORDER BY created_at DESC LIMIT 1;
+
+-- AI Lead Qualification Agent
+SELECT id, name, score, criteria_met, enrichment_summary FROM leads ORDER BY created_at DESC LIMIT 1;
+
+-- Invoice Processing Pipeline
+SELECT id, vendor_name, status, status_reasons FROM invoices ORDER BY created_at DESC LIMIT 1;
 ```
 
 ---
@@ -470,16 +550,24 @@ LIMIT 1;
 | Explicit `pull_request` check | Prevents PRs from appearing as "issues" |
 | Separate error workflow | Centralized failure notifications; reusable across projects |
 | HTTP Request node over built-in Groq node | Demonstrates raw API understanding; full control over request body |
-| `response_format: json_object` + schema in system prompt | Reliable structured output |
-| Temperature 0.1 (classification), 0.3 (reply drafting) | Deterministic classification; consistent but natural-sounding replies |
+| `response_format: json_object` + schema in system prompt | Reliable structured output on Groq |
+| Temperature 0.1 (classification), 0.3 (reply drafting), 0.0 (deterministic scoring) | Deterministic where accuracy matters; natural-sounding where readability matters |
 | Postgres per severity branch (Log Classifier) | Enables different downstream actions per severity |
 | Gemini embeddings over Groq | Groq has no embeddings endpoint; Gemini provides 1536 dims on the free tier |
 | 1536 dims over 3072 | pgvector HNSW index caps at 2000 dims; 1536 is a divisor of 3072 |
 | Postgres node over Supabase HTTP endpoint | PostgREST schema cache caused silent empty responses after `CREATE OR REPLACE FUNCTION` |
 | Precomputed request bodies in Code nodes | Bypasses n8n's JSON template interpolation, which flattens arrays and breaks on newlines |
-| 0.3 similarity threshold | Calibrated via similarity matrix of the FAQ corpus; related chunks score 0.60–1.0, unrelated score 0.40–0.60 |
+| 0.3 similarity threshold | Calibrated via similarity matrix; related chunks score 0.60–1.0, unrelated score 0.40–0.60 |
 | Telegram over Slack/Discord | Mobile push notifications; simplest demo |
 | Ingest as script, not workflow | Batch operation; different operational requirements than query path |
+| Countable criteria over adjectives (Lead Qualification) | Adjectives produce nondeterministic scoring. Arithmetic thresholds with explicit signals eliminate interpretation. |
+| Manual JSON.parse over LangChain Structured Output Parser (Lead Qualification) | Parser rejected valid output when arrays contained 4+ items. Code node is more reliable and debuggable. |
+| Title Case normalization in code, not in the prompt | LLM casing drifts even at temperature 0. Deterministic post-processing in a Code node is the correct fix. |
+| Empty-response guard on LLM calls | Transient Groq failures return empty strings. Log a sentinel row instead of dropping data. |
+| PDF text extraction before AI (Invoice Processing) | `Extract from PDF` reads the text layer natively. AI receives plain text, not binary. Eliminates multimodal complexity. |
+| Three-branch validation with explicit rules (Invoice Processing) | Valid / suspicious / invalid classification with a machine-readable `status_reasons` array. Every invoice is persisted for audit, including rejections. |
+| Precomputed SQL with `esc()` and `num()` helpers | Inline string interpolation produces `'null'` for DATE columns. Helper functions emit the SQL keyword `NULL` unquoted for null values. |
+| Telegram Trigger + Download for PDF intake (Invoice Processing) | The trigger downloads the file binary directly. No separate "Get File" node needed. |
 
 ## Gotchas Encountered
 
@@ -528,6 +616,10 @@ LIMIT 1;
 - [ ] **AI Lead Qualification Agent — Slice 3:** Route leads by score. High → HubSpot deal + Telegram alert. Medium → Airtable nurture list + scheduled follow-up. Low → Supabase only. Integrates two new business tools (HubSpot, Airtable) and introduces conditional branching based on the agent's scoring output.
 - [ ] **AI Lead Qualification Agent — Slice 4:** Personalized response email drafting. Extend the agent's output schema to include a `draft_reply` field grounded in the enrichment data and the lead's original message. Log the draft to Supabase; optionally send via Gmail for high-scoring leads.
 - [ ] **Calibrate the Company Maturity threshold with a real corpus.** The current "2 of 4 enrichment signals" threshold was validated against two test domains. Re-calibrate against 20–30 real domains spanning actual company sizes to confirm the threshold discriminates correctly.
+- [ ] **Invoice Processing Pipeline — OCR support:** Current pipeline handles text-layer PDFs only. Scanned documents return empty or garbled text. Add OCR step (Tesseract or an API) for image-based invoices.
+- [ ] **Invoice Processing Pipeline — Amount formatting:** Telegram messages render amounts as `PHP 15750` without thousand separators or decimal places. Format via `toLocaleString()` in a Code node or a message template helper.
+- [ ] **Invoice Processing Pipeline — Admin routing:** Currently all Telegram notifications go to the submitting chat. Add a `routing_config` table mapping vendor IDs to specific admin chats for multi-user deployments.
+- [ ] **Invoice Processing Pipeline — Duplicate detection:** The validation logic doesn't check for duplicate invoice numbers from the same vendor. Add a Postgres lookup before insert to flag or reject duplicates.
 
 ## About
 

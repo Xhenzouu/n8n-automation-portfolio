@@ -4,7 +4,7 @@ Production-ready automation workflows built with self-hosted n8n. Integrates Git
 
 ## Quick Tour
 
-Six production-quality workflows. Each teaches a distinct architecture pattern. Full details below.
+Seven production-quality workflows. Each teaches a distinct architecture pattern. Full details below.
 
 | # | Workflow | Pattern |
 |---|----------|---------|
@@ -14,6 +14,7 @@ Six production-quality workflows. Each teaches a distinct architecture pattern. 
 | 4 | AF Homes Inquiry Intake | RAG pipeline with vector search and grounded reply drafting |
 | 5 | AI Lead Qualification Agent | Deterministic LLM scoring with machine-readable audit trail |
 | 6 | Invoice Processing Pipeline | PDF extraction + 3-branch validation with per-status routing |
+| 7 | Customer Support Agent | Conversational AI agent with tool calling and persistent memory |
 
 **Stack:** n8n (self-hosted) · Groq · Google Gemini · Apify · Supabase (PostgreSQL + pgvector) · Telegram · Gmail · GitHub REST API
 
@@ -294,6 +295,76 @@ Supabase `invoices` table contains one row per status after cleanup, confirming 
 
 ---
 
+### 7. Customer Support Agent with Tool Calling (Groq + Supabase + Telegram)
+
+**Status:** v1.0.0 published. Multi-language support, SLA priority, and human-agent reply routing deferred to roadmap.
+
+Conversational Telegram support agent where an LLM decides which tool to call based on the customer's message. Three tools available: order lookup, shipping lookup, and escalation to a human agent. Persistent conversation memory across messages. Sub-workflow used as a tool demonstrates the agentic pattern that job listings mean by "AI Agents."
+
+**Problem it solves:** Support teams waste time on repetitive lookup questions ("where is my order?") while complex issues get lost. This workflow automates the lookup path, resolves simple questions instantly, and escalates complex cases to a human with full context — including the customer's chat ID and the reason for escalation.
+
+**Architecture:**
+
+```
+Telegram Trigger (receives customer message)
+→ AI Agent "Support Agent"
+    ├── Groq Chat Model: openai/gpt-oss-20b (temperature 0)
+    ├── Postgres Chat Memory (session_key = Telegram chat ID)
+    └── Tool connector:
+        ├── lookup_order (Postgres Tool, SELECT against orders)
+        ├── lookup_shipping (Postgres Tool, JOIN orders + shipping)
+        └── escalate_to_human (Call n8n Workflow Tool → escalate-and-notify)
+→ (AI Agent produces grounded reply)
+→ Telegram Trigger already routes the reply via the agent's response
+```
+
+**Sub-workflow `escalate-and-notify`:**
+
+```
+Execute Sub-workflow Trigger (reason, order_number, chat_id)
+→ Postgres INSERT into escalations
+→ Telegram Send to admin chat
+→ Edit Fields (returns confirmation string to the parent)
+```
+
+**Key implementation details:**
+
+- **Three tools, each with a specific purpose.** The agent's tool selection is driven by the `Description` field on each tool node. If descriptions overlap, the agent calls the wrong tool. Clear, non-overlapping descriptions produce correct selection.
+- **`lookup_order`** takes `order_number` and returns status, items, total, order date.
+- **`lookup_shipping`** takes `order_number` (not tracking number — customers don't know those) and JOINs `shipping` to `orders` to return carrier, location, estimated delivery, status.
+- **`escalate_to_human`** uses the Call n8n Workflow Tool pattern. The agent calls this tool with `reason` and `order_number` (both from `$fromAI()`), plus `chat_id` from the Telegram Trigger context. The sub-workflow handles the database write and admin notification.
+- **Sub-workflow as tool is the portfolio differentiator.** The agent treats the composite capability as one tool. Any future change to escalation (add Slack, add a ticket system, add priority logic) happens in the sub-workflow without touching the agent.
+- **Persistent memory via Postgres Chat Memory.** The `session_key` is the Telegram chat ID, so each customer gets their own conversation history. Memory persists across n8n restarts. The agent remembers context across messages: "What is the status of that order?" resolves to the order number mentioned in the previous turn.
+- **Temperature 0** for tool selection. Reasoning models might pick different tools based on subtle phrasing at higher temperatures. Temperature 0 makes tool selection deterministic.
+- **System prompt includes operational rules:** currency is PHP, dates use ISO format, ask for order number if not provided.
+
+**Verified behavior (2026-09-24):**
+
+| Test | Message | Tool called | Result |
+|------|---------|-------------|--------|
+| A | "What is the status of order ORD-2026-002?" | `lookup_order` | Reply includes order status, items, total |
+| B | "When will my order ORD-2026-001 arrive?" | `lookup_shipping` | Reply includes LBC carrier, Manila Hub location, 2026-09-25 delivery estimate |
+| C | "This is unacceptable. I want to speak to a manager about order ORD-2026-005." | `escalate_to_human` | Row inserted into `escalations`, admin Telegram notification delivered |
+| D | Message 1: "My order number is ORD-2026-001" / Message 2: "What is the status of that order?" | `lookup_order` (from memory) | Reply resolves "that order" to ORD-2026-001 without re-prompting |
+
+All four tests verify: correct tool selection, correct parameter extraction via `$fromAI()`, grounded replies from tool results, and persistent conversation memory.
+
+**Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Supabase (PostgreSQL) · Telegram Bot API · Postgres Chat Memory · LangChain AI Agent node with tool calling
+
+**Estimated impact:** Replaces first-line support triage for order and shipping inquiries. Simple lookups resolve in under 10 seconds without human intervention. Complex cases escalate with full context (reason, order number, chat ID) in the same time window.
+
+**Gotchas specific to this workflow:**
+
+- **Tool descriptions drive agent behavior more than prompts.** The `Description` field on each tool node is what the LLM reads when deciding which tool to call. Vague or overlapping descriptions cause wrong-tool selection. Tighten descriptions before tweaking the system prompt.
+- **Sub-workflow trigger node default name is `When Executed by Another Workflow`, not `Execute Sub-workflow Trigger`.** Expressions in the sub-workflow that reference the trigger by name break if you assume the wrong default. Either rename the node or update every reference.
+- **Sub-workflows must be published to be callable.** The Call n8n Workflow Tool node shows an empty dropdown if the target sub-workflow is unpublished. Publish the sub-workflow before wiring the parent.
+- **Sub-workflow references use instance-specific IDs.** The parent workflow JSON contains a hardcoded `workflowId` reference to the sub-workflow. Importing the parent JSON on a different n8n instance leaves a dangling reference. The README Setup section documents the import order and re-linking steps.
+- **Postgres Chat Memory table schema differs from expectations.** The auto-created `n8n_chat_histories` table has columns `id`, `session_id`, `message` (jsonb). There is no `created_at` column. Order by `id DESC` for chronological queries.
+- **LLM date reformatting can shift dates by one day.** Even with the system prompt instructing "use ISO format exactly as returned by tools," the model rendered `2026-09-15` as `2026-09-14` in one test. Root cause is likely timezone conversion during the model's date parsing. Cosmetic issue, not a data corruption issue.
+- **Sub-workflow trigger nodes need explicit input fields defined.** Clicking "Execute step" on the trigger without providing inputs produces `undefined` values in downstream nodes. Test the sub-workflow from the parent workflow, not in isolation, unless you manually provide all input values.
+
+---
+
 ## Repo Structure
 
 ```
@@ -329,6 +400,31 @@ package.json
    - `YOUR_GEMINI_API_KEY` — your Gemini key
    - `YOUR_APIFY_TOKEN` — your Apify API token
 5. **Publish** each workflow
+
+### Sub-workflow import order
+
+Two sub-workflows exist in this portfolio: `notify-telegram` and `escalate-and-notify`. Both are referenced by parent workflows via internal n8n IDs, which are instance-specific.
+
+When importing workflows that reference a sub-workflow:
+
+1. Import the sub-workflow JSON first (`notify-telegram.json` or `escalate-and-notify.json`)
+2. Open it in n8n and click **Publish**
+3. Import the parent workflow JSON second
+4. Open the parent workflow, locate the tool or node that references the sub-workflow
+5. Change its workflow dropdown to the newly imported sub-workflow
+6. Save and publish the parent workflow
+
+Workflows that use sub-workflows:
+
+| Parent workflow | Sub-workflow required |
+|-----------------|----------------------|
+| Customer Support Agent | `escalate-and-notify` |
+| AF Homes Inquiry Intake | `notify-telegram` |
+| AI Log Classifier | `notify-telegram` |
+| AI Lead Qualification Agent | `notify-telegram` |
+| Invoice Processing Pipeline | `notify-telegram` (or direct Telegram Send) |
+| GitHub Good First Issue Notifier | none |
+| Error Handler | none |
 
 ### Required credentials
 
@@ -620,6 +716,11 @@ SELECT id, vendor_name, status, status_reasons FROM invoices ORDER BY created_at
 - [ ] **Invoice Processing Pipeline — Amount formatting:** Telegram messages render amounts as `PHP 15750` without thousand separators or decimal places. Format via `toLocaleString()` in a Code node or a message template helper.
 - [ ] **Invoice Processing Pipeline — Admin routing:** Currently all Telegram notifications go to the submitting chat. Add a `routing_config` table mapping vendor IDs to specific admin chats for multi-user deployments.
 - [ ] **Invoice Processing Pipeline — Duplicate detection:** The validation logic doesn't check for duplicate invoice numbers from the same vendor. Add a Postgres lookup before insert to flag or reject duplicates.
+- [ ] **Customer Support Agent — Multi-language support:** Detect customer language and instruct the agent to reply in the same language. Useful for Philippine customers who message in Tagalog or Taglish.
+- [ ] **Customer Support Agent — Escalation priority and SLA:** Add a `priority` field to the `escalations` table (low, medium, high). Route high-priority escalations to a separate admin chat. Add SLA timers that re-alert if no human response within a threshold.
+- [ ] **Customer Support Agent — Human agent reply routing:** Currently escalations notify the admin but don't route the human's reply back to the customer. Add a flow where the admin replies in Telegram and the workflow forwards the message to the original customer chat.
+- [ ] **Customer Support Agent — Tool for warranty and returns:** Add a fourth tool for warranty claims and return processing. Demonstrates how the agent handles a growing tool library without prompt changes.
+- [ ] **Workflows 8-10 (planned):** Human-in-the-Loop Approval (Wait node + callback), Multi-System Orchestration (HubSpot + Airtable + Google Calendar), and Ops Dashboard (cross-workflow aggregation and reporting).
 
 ## About
 
@@ -628,7 +729,6 @@ Built by [Henson Brix Arroyo](https://hensonbrix-portfolio.vercel.app) — Full-
 - GitHub: [@Xhenzouu](https://github.com/Xhenzouu)
 - Portfolio: [hensonbrix-portfolio.vercel.app](https://hensonbrix-portfolio.vercel.app)
 - Email: arroyobrix@gmail.com
-
 ## License
 
 MIT

@@ -1,0 +1,145 @@
+{
+  "name": "escalate-and-notify",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO escalations (customer_chat_id, reason, order_number)\nVALUES (\n  '{{ $('Execute Sub-workflow Trigger').first().json.chat_id || \"\" }}',\n  '{{ $('Execute Sub-workflow Trigger').first().json.reason.replace(/'/g, \"''\") }}',\n  '{{ ($('Execute Sub-workflow Trigger').first().json.order_number || \"\").replace(/'/g, \"''\") }}'\n);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        208,
+        0
+      ],
+      "id": "4554f648-18a4-4eb1-ab42-4cd6baa4e08f",
+      "name": "Insert Escalation",
+      "credentials": {
+        "postgres": {
+          "id": "IbRwiLg11WhiBmNv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=Escalation requested  Reason: {{ $('Execute Sub-workflow Trigger').first().json.reason }} Order: {{ $('Execute Sub-workflow Trigger').first().json.order_number \n\n 'N/A' }} Customer chat: {{ $('Execute Sub-workflow Trigger').first().json.chat_id }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        416,
+        0
+      ],
+      "id": "a820a456-2009-4c26-a682-ce8479b22b2b",
+      "name": "Notify Admin",
+      "webhookId": "dcf0ac96-358a-4d7e-ae81-b3206aeece91",
+      "credentials": {
+        "telegramApi": {
+          "id": "tBKfymaqPqy1NcNv",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "8ecff048-39ae-43b0-b872-fe3f309094c7",
+              "name": "result",
+              "value": "Escalation logged. A human agent will follow up shortly.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        624,
+        0
+      ],
+      "id": "dc36f149-1579-45b1-8540-9a7a8b13765f",
+      "name": "Return Confirmation"
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "reason"
+            },
+            {
+              "name": "order_number"
+            },
+            {
+              "name": "chat_id"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "68a0b180-4b5e-4770-bcc8-22fd62b2775f",
+      "name": "Execute Sub-workflow Trigger"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Insert Escalation": {
+      "main": [
+        [
+          {
+            "node": "Notify Admin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Admin": {
+      "main": [
+        [
+          {
+            "node": "Return Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Sub-workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Insert Escalation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "8947e6ee-a78a-420a-a1fa-b7f05e7c54bf",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "daae1a4cfdc8cedef8e4c0a51dea5436df6634717b0af4368ce8236758877cd8"
+  },
+  "id": "7GhI5isH11kocl7O",
+  "tags": []
+}

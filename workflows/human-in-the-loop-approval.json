@@ -1,0 +1,226 @@
+{
+  "name": "Human-in-the-Loop Approval",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "draft-approval",
+        "options": {
+          "responseCode": {
+            "values": {}
+          }
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "34b71cd3-a2e5-4647-903e-bb6238b479c2",
+      "name": "Webhook",
+      "webhookId": "0c3c1e8e-0f7d-4522-b6be-103e4f86e0a6"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.body.draft }}",
+        "options": {
+          "systemMessage": "You are an editor. Refine the provided draft for tone, clarity, and length. Return ONLY the refined text. Do not add explanations or commentary. Do not wrap the output in quotes or markdown fences."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        208,
+        0
+      ],
+      "id": "e470d48c-0c07-4398-8d68-60d9be3d05ab",
+      "name": "Refine Draft"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-20b",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        80,
+        208
+      ],
+      "id": "2bd536cd-4338-41ea-98a3-575d5b9c852c",
+      "name": "Groq Chat Model",
+      "credentials": {
+        "groqApi": {
+          "id": "9hnjfZkpr84HmloQ",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO draft_approvals (draft_original, draft_refined, source_chat_id)\nVALUES (\n  '{{ $('Webhook').first().json.body.draft.replace(/'/g, \"''\") }}',\n  '{{ $('Refine Draft').first().json.output.replace(/'/g, \"''\") }}',\n  '{{ $('Webhook').first().json.body.source_chat_id || \"\" }}'\n)\nRETURNING id;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        560,
+        0
+      ],
+      "id": "27c938f0-3ea3-46aa-99e8-1bb33ebb3ae1",
+      "name": "Insert Draft",
+      "credentials": {
+        "postgres": {
+          "id": "IbRwiLg11WhiBmNv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=Draft for review:  {{ $('Refine Draft').first().json.output }}  Approve, reject, or request edits?",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Approve",
+                    "additionalFields": {
+                      "callback_data": "=approve:{{ $('Insert Draft').first().json.id }}"
+                    }
+                  },
+                  {
+                    "text": "Reject",
+                    "additionalFields": {
+                      "callback_data": "=reject:{{ $('Insert Draft').first().json.id }}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Edit",
+                    "additionalFields": {
+                      "callback_data": "=edit:{{ $('Insert Draft').first().json.id }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        976,
+        0
+      ],
+      "id": "5a1881dc-51b2-4ca5-80ec-be1cb5f48b58",
+      "name": "Send a text message",
+      "webhookId": "a9b2367b-afe2-4e45-950b-a1fa96598a48",
+      "credentials": {
+        "telegramApi": {
+          "id": "tBKfymaqPqy1NcNv",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const result = $input.first().json;\n\n// If the Postgres node returned {success: true}, query Supabase for the latest row\n// Otherwise use the returned id\nlet draftId = result.id;\n\nif (!draftId) {\n  // Fallback: assume the most recent row is ours\n  // This is racy in multi-user but fine for a demo\n  return {\n    json: {\n      id: null,\n      needs_lookup: true\n    }\n  };\n}\n\nreturn {\n  json: {\n    id: draftId\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        0
+      ],
+      "id": "99da4331-807a-4dc3-b548-f0c5ac60b9f7",
+      "name": "Extract Draft ID"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Refine Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Refine Draft",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refine Draft": {
+      "main": [
+        [
+          {
+            "node": "Insert Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Draft": {
+      "main": [
+        [
+          {
+            "node": "Extract Draft ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Draft ID": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "ecfaa8ed-4d90-4cad-84f5-ecec984a0a7d",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "daae1a4cfdc8cedef8e4c0a51dea5436df6634717b0af4368ce8236758877cd8"
+  },
+  "id": "8ZEk7HtveepuWka6",
+  "tags": []
+}

@@ -4,7 +4,7 @@ Production-ready automation workflows built with self-hosted n8n. Integrates Git
 
 ## Quick Tour
 
-Seven production-quality workflows. Each teaches a distinct architecture pattern. Full details below.
+Eight production-quality workflows. Each teaches a distinct architecture pattern. Full details below.
 
 | # | Workflow | Pattern |
 |---|----------|---------|
@@ -15,6 +15,7 @@ Seven production-quality workflows. Each teaches a distinct architecture pattern
 | 5 | AI Lead Qualification Agent | Deterministic LLM scoring with machine-readable audit trail |
 | 6 | Invoice Processing Pipeline | PDF extraction + 3-branch validation with per-status routing |
 | 7 | Customer Support Agent | Conversational AI agent with tool calling and persistent memory |
+| 8 | Human-in-the-Loop Approval | AI refinement + Telegram inline keyboard approval |
 
 **Stack:** n8n (self-hosted) · Groq · Google Gemini · Apify · Supabase (PostgreSQL + pgvector) · Telegram · Gmail · GitHub REST API
 
@@ -365,6 +366,76 @@ All four tests verify: correct tool selection, correct parameter extraction via 
 
 ---
 
+### 8. Human-in-the-Loop Approval (Groq + Supabase + Telegram Inline Keyboard)
+
+**Status:** v1.0.0 published. Edit loop, publish endpoint, and separate-bot isolation deferred to roadmap.
+
+Two-workflow approval system where an AI Agent refines a submitted draft and a human approves, rejects, or requests edits via Telegram inline keyboard buttons. The decision is logged to Supabase and a confirmation is sent back to the reviewer.
+
+**Problem it solves:** Content teams and marketing workflows need human oversight before publishing AI-generated content. This workflow automates the refinement step (tone, clarity, length) and provides a structured approval interface without leaving Telegram. Every decision is auditable.
+
+**Architecture:**
+
+Two workflows:
+
+```
+Parent workflow (human-in-the-loop-approval.json):
+Webhook (POST /draft-approval)
+→ AI Agent "Refine Draft" (Groq openai/gpt-oss-20b, temperature 0.3)
+    └── Groq Chat Model sub-node
+→ Insert Draft (Postgres INSERT ... RETURNING id)
+→ Send for Approval (Telegram Send Message with Inline Keyboard: Approve / Reject / Edit)
+```
+
+```
+Callback handler workflow (approval-callback-handler.json, published):
+Telegram Trigger (Callback Query)
+→ Acknowledge Click (Telegram Answer Query)
+→ Log Decision (Postgres UPDATE draft_approvals)
+→ Send Confirmation (Telegram Send Message to the original chat)
+```
+
+**Key implementation details:**
+
+- **Two-workflow design over Wait node.** The Wait node approach requires storing a resume URL in Supabase, calling it from the callback handler, and handling timeouts. The two-workflow pattern is simpler: Telegram callback queries arrive as new webhook events, and the callback handler updates the database row directly. Same user experience, less machinery.
+- **Draft row created before Telegram send.** The parent workflow inserts the draft into `draft_approvals` before sending to Telegram. The `RETURNING id` clause provides the row ID. That ID is embedded in each button's `callback_data` as `decision:id`.
+- **Inline keyboard with dynamic callback data.** The Approve / Reject / Edit buttons each carry a different `callback_data` value: `approve:42`, `reject:42`, `edit:42`. The callback handler splits on `:` to extract the decision and the row ID.
+- **Answer Query node acknowledges the click.** Telegram requires the bot to acknowledge callback queries within 10 seconds. Without the `Answer Query` node, the button shows a spinner to the user until it times out.
+- **Audit trail per decision.** Every draft is persisted with its original and refined versions. Every decision is stamped with `decided_at` and `decided_by` (the Telegram user ID of the reviewer).
+
+**Verified behavior (2026-09-25):**
+
+| Step | Result |
+|------|--------|
+| POST a casual draft to /draft-approval | Webhook received, workflow started |
+| AI Agent refines the draft | Tone and clarity improved; casual language normalized |
+| Insert Draft (Postgres RETURNING id) | Row inserted with id=1 |
+| Telegram Send with inline keyboard | Message delivered with three buttons |
+| Human clicks Approve | Callback query received by callback handler |
+| Answer Query | Button loading indicator cleared |
+| Postgres UPDATE | Row updated: decision=approve, decided_by=8636684715 |
+| Telegram Send confirmation | Confirmation message delivered to reviewer |
+
+**Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Supabase (PostgreSQL) · Telegram Bot API (inline keyboard + callback query)
+
+**Estimated impact:** Reduces content approval turnaround from email threads and Slack messages to a single Telegram button click. Every decision is logged with full context for audit.
+
+**Gotchas specific to this workflow:**
+
+- **Only one Telegram Trigger can hold a bot's webhook at a time.** If multiple workflows use Telegram Triggers with the same bot, the most recently published one wins. Others silently stop firing. Fix: use a separate bot per workflow with an inbound trigger. Create each via BotFather and add a distinct credential in n8n.
+- **The `$json` reference is replaced after Telegram Answer Query.** The Answer Query node returns `{ok: true, result: true}`, which overwrites `$json` for downstream nodes. All references to the callback query data must use `$('Telegram Trigger').first().json.callback_query.*`.
+- **`callback_data` has a 64-byte limit.** The `decision:id` format fits comfortably, but do not pack additional data into it. Telegram rejects buttons whose callback_data exceeds 64 bytes.
+- **Telegram inline keyboard markdown parsing.** If the draft text contains markdown characters (`*`, `_`, `[`), Telegram may interpret them as formatting. Set Parse Mode to `None` on the Send Message node if drafts may contain these characters.
+- **Callback queries arrive as a distinct event type.** The Telegram Trigger's `Trigger On` setting must include `Callback Query` for the callback handler. If it's set to `Message` only, button clicks will not fire the workflow.
+- **A known n8n bug causes callback queries to not fire when the Restrict to Chat IDs field is populated.** Leave that field blank for workflows that receive button clicks.
+
+**Deferred:**
+- Edit loop (when `decision = 'edit'`, re-run the refinement with the human's edit notes)
+- Publish path (when `decision = 'approve'`, POST the refined draft to a real publishing endpoint)
+- Separate Telegram bots per workflow to eliminate webhook conflicts
+
+---
+
 ## Repo Structure
 
 ```
@@ -423,8 +494,12 @@ Workflows that use sub-workflows:
 | AI Log Classifier | `notify-telegram` |
 | AI Lead Qualification Agent | `notify-telegram` |
 | Invoice Processing Pipeline | `notify-telegram` (or direct Telegram Send) |
+| Human-in-the-Loop Approval | none (paired with `approval-callback-handler`) |
+| Approval Callback Handler | none (companion to `human-in-the-loop-approval`) |
 | GitHub Good First Issue Notifier | none |
 | Error Handler | none |
+
+Workflow 8 uses a two-workflow pattern rather than a sub-workflow. Both `human-in-the-loop-approval.json` and `approval-callback-handler.json` must be imported. The callback handler must be published before testing the parent workflow, or button clicks will not fire.
 
 ### Required credentials
 
@@ -720,7 +795,10 @@ SELECT id, vendor_name, status, status_reasons FROM invoices ORDER BY created_at
 - [ ] **Customer Support Agent — Escalation priority and SLA:** Add a `priority` field to the `escalations` table (low, medium, high). Route high-priority escalations to a separate admin chat. Add SLA timers that re-alert if no human response within a threshold.
 - [ ] **Customer Support Agent — Human agent reply routing:** Currently escalations notify the admin but don't route the human's reply back to the customer. Add a flow where the admin replies in Telegram and the workflow forwards the message to the original customer chat.
 - [ ] **Customer Support Agent — Tool for warranty and returns:** Add a fourth tool for warranty claims and return processing. Demonstrates how the agent handles a growing tool library without prompt changes.
-- [ ] **Workflows 8-10 (planned):** Human-in-the-Loop Approval (Wait node + callback), Multi-System Orchestration (HubSpot + Airtable + Google Calendar), and Ops Dashboard (cross-workflow aggregation and reporting).
+- [ ] **Human-in-the-Loop Approval — Edit path:** When the human clicks Edit, re-run the AI Agent with the original draft and the human's edit notes. Loop back to the approval step until the human approves or rejects.
+- [ ] **Human-in-the-Loop Approval — Publish endpoint:** When the human clicks Approve, POST the refined draft to a real publishing endpoint (WordPress, Ghost, a custom API). Currently only the decision is logged; the approved draft isn't sent anywhere.
+- [ ] **Separate Telegram bots per workflow:** Currently all workflows with inbound Telegram Triggers share the XIRV Log Alerts bot, which limits one webhook at a time. Create a distinct bot per workflow via BotFather and register separate credentials in n8n. This eliminates the "most recently published wins" conflict.
+- [ ] **Workflows 9-10 (planned):** Multi-System Orchestration (HubSpot + Airtable + Google Calendar) and Ops Dashboard (cross-workflow aggregation and reporting).
 
 ## About
 
@@ -729,6 +807,7 @@ Built by [Henson Brix Arroyo](https://hensonbrix-portfolio.vercel.app) — Full-
 - GitHub: [@Xhenzouu](https://github.com/Xhenzouu)
 - Portfolio: [hensonbrix-portfolio.vercel.app](https://hensonbrix-portfolio.vercel.app)
 - Email: arroyobrix@gmail.com
+
 ## License
 
 MIT

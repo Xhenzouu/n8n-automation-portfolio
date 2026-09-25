@@ -413,7 +413,7 @@ Telegram Trigger (Callback Query)
 | Telegram Send with inline keyboard | Message delivered with three buttons |
 | Human clicks Approve | Callback query received by callback handler |
 | Answer Query | Button loading indicator cleared |
-| Postgres UPDATE | Row updated: decision=approve, decided_by=8636684715 |
+| Postgres UPDATE | Row updated: decision=approve, decided_by=YOUR_TELEGRAM_CHAT_ID |
 | Telegram Send confirmation | Confirmation message delivered to reviewer |
 
 **Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Supabase (PostgreSQL) · Telegram Bot API (inline keyboard + callback query)

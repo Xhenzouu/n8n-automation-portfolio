@@ -20,3 +20,5 @@ desktop.ini
 # Environment files
 .env
 mcp-server/.env
+
+node_modules/

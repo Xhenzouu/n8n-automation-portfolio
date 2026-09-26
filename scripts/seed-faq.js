@@ -16,7 +16,7 @@ const { createClient } = require('@supabase/supabase-js');
 
 const FAQ_DIR = path.join(__dirname, 'faq');
 const EMBEDDING_MODEL = 'gemini-embedding-001';
-const EMBEDDING_DIMENSIONS = 768;
+const EMBEDDING_DIMENSIONS = 1536;
 
 const supabase = createClient(
   process.env.SUPABASE_URL,

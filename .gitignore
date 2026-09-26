@@ -16,3 +16,7 @@ desktop.ini
 # IDE
 .vscode/
 .idea/
+
+# Environment files
+.env
+mcp-server/.env

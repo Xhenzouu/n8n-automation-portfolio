@@ -4,7 +4,7 @@
       "type": "stdio",
       "command": "node",
       "args": [
-        "D:\\projects\\n8n-automation-portfolio\\mcp-server\\index.js"
+        "mcp-server/index.js"
       ],
       "env": {}
     }

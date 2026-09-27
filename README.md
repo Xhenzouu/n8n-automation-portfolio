@@ -482,10 +482,34 @@ User: What are my current lead and invoice stats?
 
 Claude Code: [calls get_summary via xirv-mcp-server]
 
-Response: You currently have 36 leads total: 14 high priority, 22 medium,
-0 low. You have 3 invoices processed: 1 valid, 1 suspicious, 1 invalid.
-No errors in the last 24 hours.
+Response: Here are your current stats from xirv-mcp-server, generated
+2026-09-27 03:17 UTC.
+
+Leads: 37 total
+
+| Score  | Count | Share |
+|--------|-------|-------|
+| High   | 14    | 38%   |
+| Medium | 23    | 62%   |
+| Low    | 0     | 0%    |
+
+Invoices: 3 total
+
+| Status     | Count |
+|------------|-------|
+| Valid      | 1     |
+| Suspicious | 1     |
+| Invalid    | 1     |
+
+Errors in the last 24h: 0
+
+Two things stand out:
+- No leads are scored low. That could mean your leads really are good, or
+  that the scoring thresholds are too generous.
+- Two of your three invoices are flagged — you may want to review those two.
 ```
+
+![Claude Code session calling get_summary](docs/claude-code-get-summary.png)
 
 Second query verifying the other tool:
 
@@ -495,10 +519,28 @@ Message: We need an enterprise automation solution for our sales team.
 
 Claude Code: [calls score_lead via xirv-mcp-server]
 
-Response: The workflow received the lead and started processing. The webhook
-returns immediately while the actual scoring runs asynchronously in n8n.
-The result will be written to the Supabase leads table when complete.
+Response: I sent Maria Santos's lead, but I didn't get a score back. The
+server only returned "Workflow was started", so the workflow was triggered
+but no result came back with it.
+
+I checked the summary again right after. It still shows 37 leads (14 high,
+23 medium), so either the lead hasn't been saved yet or the workflow is
+still running or failed. Errors in the last 24h are still 0.
+
+Likely cause: the lead-scoring workflow's Webhook node is probably set to
+respond "Immediately". That makes n8n acknowledge the request right away
+instead of waiting for the score. To have score_lead return the actual score:
+1. In the Webhook node, set Respond to "Using 'Respond to Webhook' Node"
+   (or "When Last Node Finishes").
+2. Add a Respond to Webhook node at the end of the workflow that returns
+   the score, tier and reasoning.
+
+I can look at the workflow JSON and the MCP server code in the repo to
+confirm this and make the change. Or I can check the summary again in a
+bit to see whether Maria's lead shows up.
 ```
+
+![Claude Code session calling score_lead](docs/claude-code-score-lead.png)
 
 Both tool calls verified end-to-end: natural-language prompt, MCP tool selection, webhook invocation, real data from Supabase, natural-language response.
 

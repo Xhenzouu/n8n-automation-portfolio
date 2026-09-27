@@ -8,35 +8,37 @@ dotenv.config();
 
 // --- CONFIGURATION ---
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;
+const N8N_SUMMARY_WEBHOOK_URL = process.env.N8N_SUMMARY_WEBHOOK_URL;
 
 // --- STARTUP VALIDATION ---
-// Fail fast if the URL is malformed. This catches the four URL bugs seen during development.
-if (!N8N_WEBHOOK_URL) {
-  console.error("[FATAL] N8N_WEBHOOK_URL is not set. Check mcp-server/.env");
-  process.exit(1);
+function validateWebhookUrl(name, url) {
+  if (!url) {
+    console.error(`[FATAL] ${name} is not set. Check mcp-server/.env`);
+    process.exit(1);
+  }
+  if (!url.startsWith("https://")) {
+    console.error(`[FATAL] ${name} must start with https://. Got: ${url}`);
+    process.exit(1);
+  }
+  if (url.includes("https://https://")) {
+    console.error(`[FATAL] ${name} contains a doubled https:// prefix. Got: ${url}`);
+    process.exit(1);
+  }
+  if (url.includes("//webhook/")) {
+    console.error(`[FATAL] ${name} contains a doubled slash before /webhook/. Got: ${url}`);
+    process.exit(1);
+  }
+  if (!url.includes("/webhook/")) {
+    console.error(`[FATAL] ${name} must contain /webhook/. Got: ${url}`);
+    process.exit(1);
+  }
 }
 
-if (!N8N_WEBHOOK_URL.startsWith("https://")) {
-  console.error(`[FATAL] N8N_WEBHOOK_URL must start with https://. Got: ${N8N_WEBHOOK_URL}`);
-  process.exit(1);
-}
-
-if (N8N_WEBHOOK_URL.includes("https://https://")) {
-  console.error(`[FATAL] N8N_WEBHOOK_URL contains a doubled https:// prefix. Got: ${N8N_WEBHOOK_URL}`);
-  process.exit(1);
-}
-
-if (N8N_WEBHOOK_URL.includes("//webhook/")) {
-  console.error(`[FATAL] N8N_WEBHOOK_URL contains a doubled slash before /webhook/. Got: ${N8N_WEBHOOK_URL}`);
-  process.exit(1);
-}
-
-if (!N8N_WEBHOOK_URL.includes("/webhook/")) {
-  console.error(`[FATAL] N8N_WEBHOOK_URL must contain /webhook/. Got: ${N8N_WEBHOOK_URL}`);
-  process.exit(1);
-}
+validateWebhookUrl("N8N_WEBHOOK_URL", N8N_WEBHOOK_URL);
+validateWebhookUrl("N8N_SUMMARY_WEBHOOK_URL", N8N_SUMMARY_WEBHOOK_URL);
 
 console.error(`[STARTUP] N8N_WEBHOOK_URL validated: ${N8N_WEBHOOK_URL}`);
+console.error(`[STARTUP] N8N_SUMMARY_WEBHOOK_URL validated: ${N8N_SUMMARY_WEBHOOK_URL}`);
 
 // --- SERVER SETUP ---
 const server = new McpServer({
@@ -63,8 +65,7 @@ server.tool(
       const response = await fetch(N8N_WEBHOOK_URL, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          ...(N8N_API_KEY && { "Authorization": `Bearer ${N8N_API_KEY}` })
+          "Content-Type": "application/json"
         },
         body: JSON.stringify({ name, email, company, message })
       });
@@ -93,6 +94,52 @@ server.tool(
       console.error(`[score_lead] Fetch error:`, error);
       return {
         content: [{ type: "text", text: `Error: Could not connect to workflow. ${error.message}` }],
+        isError: true
+      };
+    }
+  }
+);
+
+// --- TOOL: get_summary ---
+server.tool(
+  "get_summary",
+  // No input parameters
+  {},
+  // Handler function
+  async () => {
+    console.error(`[get_summary] Fetching summary from workflow`);
+
+    try {
+      const response = await fetch(N8N_SUMMARY_WEBHOOK_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({})
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[get_summary] Webhook failed with status ${response.status}: ${errorText}`);
+        return {
+          content: [{ type: "text", text: `Error: Summary workflow returned ${response.status}` }],
+          isError: true
+        };
+      }
+
+      const data = await response.json();
+      console.error(`[get_summary] Summary retrieved:`, JSON.stringify(data));
+
+      const resultText = typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
+
+      return {
+        content: [{ type: "text", text: resultText }]
+      };
+
+    } catch (error) {
+      console.error(`[get_summary] Fetch error:`, error);
+      return {
+        content: [{ type: "text", text: `Error: Could not connect to summary workflow. ${error.message}` }],
         isError: true
       };
     }

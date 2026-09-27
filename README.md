@@ -602,6 +602,8 @@ The `mcp-server/` folder contains its own `package.json` and dependencies. Insta
    - `YOUR_APIFY_TOKEN` — your Apify API token
 5. **Publish** each workflow
 
+Workflow 9 (MCP Integration Server) requires the `summary-digest` workflow to be imported and published. The MCP server's `get_summary` tool calls this workflow's webhook.
+
 ### Sub-workflow import order
 
 Two sub-workflows exist in this portfolio: `notify-telegram` and `escalate-and-notify`. Both are referenced by parent workflows via internal n8n IDs, which are instance-specific.

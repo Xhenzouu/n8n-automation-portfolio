@@ -4,7 +4,7 @@ Production-ready automation workflows built with self-hosted n8n. Integrates Git
 
 ## Quick Tour
 
-Eight production-quality workflows. Each teaches a distinct architecture pattern. Full details below.
+Nine production-quality workflows. Each teaches a distinct architecture pattern. Full details below.
 
 | # | Workflow | Pattern |
 |---|----------|---------|
@@ -16,6 +16,7 @@ Eight production-quality workflows. Each teaches a distinct architecture pattern
 | 6 | Invoice Processing Pipeline | PDF extraction + 3-branch validation with per-status routing |
 | 7 | Customer Support Agent | Conversational AI agent with tool calling and persistent memory |
 | 8 | Human-in-the-Loop Approval | AI refinement + Telegram inline keyboard approval |
+| 9 | MCP Integration Server | n8n workflows exposed as tools for Claude Code |
 
 **Stack:** n8n (self-hosted) · Groq · Google Gemini · Apify · Supabase (PostgreSQL + pgvector) · Telegram · Gmail · GitHub REST API
 
@@ -436,15 +437,102 @@ Telegram Trigger (Callback Query)
 
 ---
 
+### 9. MCP Integration Server (n8n Workflows as Claude Code Tools)
+
+**Status:** v1.0.0 published. Additional tools and streaming responses deferred to roadmap.
+
+A small Node.js server that turns existing n8n workflows into tools that Claude Code (or any MCP-compatible AI agent) can call in natural language. Ask "what are my current lead and invoice stats?" and Claude Code calls the appropriate workflow, retrieves the JSON response, and answers conversationally. No custom code on the AI side. No custom integration code on the n8n side. Just a standardized protocol that both speak.
+
+**Problem it solves:** Existing automation lives behind webhooks, dashboards, and scheduled jobs. To use that data, someone has to open n8n, find the workflow, and read the results manually. This server exposes the same workflows as callable tools that any MCP-compatible AI assistant can use. The automation becomes an extension of the AI, not a separate tool.
+
+**Architecture:**
+
+```
+Claude Code session
+→ xirv-mcp-server (Node.js, stdio transport)
+    ├── Tool: score_lead → POST to n8n webhook → AI Lead Qualification Agent
+    └── Tool: get_summary → POST to n8n webhook → Summary Digest workflow
+→ Response returned to Claude Code
+→ Claude Code answers in natural language
+```
+
+Two components:
+
+- **`mcp-server/index.js`**: Node.js server using `@modelcontextprotocol/sdk`. Defines two tools with Zod input schemas, POSTs to n8n webhooks, returns JSON.
+- **`.mcp.json`** (repo root): Registers the server at project scope. When Claude Code runs from the repo root, it spawns the server automatically.
+
+**The differentiator:** This is not "I built an MCP server." It is "I turned my existing automation into tools an AI agent can use." The distinction matters. The first framing is jargon. The second is a capability.
+
+**Key implementation details:**
+
+- **Two tools, no wrapper code.** `score_lead` accepts `{name, email, company, message}` and returns a lead classification. `get_summary` accepts no arguments and returns a status digest. Each tool is a thin proxy over an n8n webhook. No business logic in the MCP server.
+- **Stdio transport.** The server speaks MCP over standard input/output. Claude Code spawns it as a child process. No ports, no HTTP, no network configuration.
+- **Project-scoped `.mcp.json`.** Lives at the repo root, uses a relative path (`mcp-server/index.js`), and travels with the repo. Anyone cloning can run `claude` from the repo root and connect.
+- **Startup validation.** Five checks on both webhook URLs before the server runs: variable is set, starts with `https://`, no doubled `https://` prefix, no doubled slash before `/webhook/`, contains `/webhook/`. Any failure exits with a `[FATAL]` message. This catches URL malformations at startup instead of at tool-call time.
+- **Explicit `.env` path resolution.** The server loads `.env` relative to its own script location, not the process CWD. Without this fix, running `claude` from the repo root would break `.env` loading because Claude Code spawns the server with the session's CWD.
+- **Zero secrets in `.mcp.json`.** The config only defines the command (`node`), the arguments (`mcp-server/index.js`), and an empty env object. All secrets live in `mcp-server/.env`, which is gitignored. The committed `.env.example` shows the shape.
+- **Async `score_lead`.** The n8n webhook returns `{"message":"Workflow was started"}` immediately. The actual scoring happens asynchronously. Claude Code observes this pattern and explains it back to the user without prompting.
+
+**Verified behavior (2026-09-27):**
+
+Claude Code session transcript:
+
+```
+User: What are my current lead and invoice stats?
+
+Claude Code: [calls get_summary via xirv-mcp-server]
+
+Response: You currently have 36 leads total: 14 high priority, 22 medium,
+0 low. You have 3 invoices processed: 1 valid, 1 suspicious, 1 invalid.
+No errors in the last 24 hours.
+```
+
+Second query verifying the other tool:
+
+```
+User: Score this lead: Maria Santos, maria@acme.ph, Acme Corp.
+Message: We need an enterprise automation solution for our sales team.
+
+Claude Code: [calls score_lead via xirv-mcp-server]
+
+Response: The workflow received the lead and started processing. The webhook
+returns immediately while the actual scoring runs asynchronously in n8n.
+The result will be written to the Supabase leads table when complete.
+```
+
+Both tool calls verified end-to-end: natural-language prompt, MCP tool selection, webhook invocation, real data from Supabase, natural-language response.
+
+**Stack:** Node.js · `@modelcontextprotocol/sdk` · Zod · dotenv · n8n (as backend) · Claude Code (as client) · Cloudflare Tunnel
+
+**Estimated impact:** Exposes existing automation to any MCP-compatible AI agent. Claude Code can now query Supabase-backed workflows in natural language without custom code on either side. The same pattern applies to any future workflow: add a webhook, expose it as a tool, and the AI gets a new capability.
+
+**Gotchas specific to this workflow:**
+
+- **Four classes of URL malformation can silently break webhook calls.** Doubled `https://` prefix. Doubled domain suffix (`.trycloudflare.com.trycloudflare.com`). Doubled slash before `/webhook/`. Stale tunnel URL after a restart. Startup validation catches the first three. The fourth requires manual verification when the tunnel changes.
+- **`.env` files resolve relative to the process CWD by default.** When Claude Code spawns the MCP server, the CWD is the Claude Code session directory, not the server's directory. Loading `.env` via `dotenv.config()` alone fails. Fix by resolving the path explicitly: `dotenv.config({ path: join(__dirname, '.env') })`.
+- **Project-scoped MCP servers require approval on first use.** Claude Code prompts for trust when it sees `.mcp.json` in a repo. Status shows "Pending approval" until you run `claude` interactively and confirm. Approval persists in `~/.claude.json`.
+- **Only one process can bind stdio at a time.** Running the MCP Inspector and Claude Code simultaneously causes the second process to fail silently. Disconnect the Inspector before starting Claude Code, or use separate machines.
+- **`@modelcontextprotocol/inspector` spawns its own child process on Connect.** The working directory is wherever `npx` was invoked. Run it from inside `mcp-server/` so `index.js` resolves. Or use the `--cwd` flag to set the directory explicitly.
+- **Windows folder locks prevent `Move-Item`.** A running `node.exe`, an open VS Code window, or a PowerShell session with the folder as CWD will block the move. Kill processes, close VS Code, `cd C:\` in every shell, then retry. `Get-CimInstance Win32_Process` finds locks.
+- **Leading whitespace in `.gitignore` patterns is preserved.** A pattern like `  node_modules/` matches a directory name with two leading spaces, not the actual `node_modules/` folder. `git check-ignore -v` shows the pattern as it's interpreted. Fix by removing the whitespace.
+- **Relative paths in `.mcp.json` require Claude Code to spawn from the repo root.** If you run `claude` from a subdirectory, the relative path breaks. Documented behavior: always `cd` to the repo root before starting Claude Code.
+- **Absolute paths in `.mcp.json` work but don't travel with the repo.** A reviewer cloning the repo would need to edit the file. The relative path avoids this. Both are valid; relative is preferred for portability.
+
+---
+
 ## Repo Structure
 
 ```
 workflows/      # Runtime workflows. Import these into n8n.
 scripts/        # One-off setup utilities. Run once, then discard.
+mcp-server/     # Node.js MCP server exposing n8n workflows as tools.
+.mcp.json       # Claude Code MCP config. Uses relative path to mcp-server.
 README.md
 package.json
 .env.example
 ```
+
+The `mcp-server/` folder contains its own `package.json` and dependencies. Install them separately with `cd mcp-server && npm install`.
 
 ---
 
@@ -500,6 +588,16 @@ Workflows that use sub-workflows:
 | Error Handler | none |
 
 Workflow 8 uses a two-workflow pattern rather than a sub-workflow. Both `human-in-the-loop-approval.json` and `approval-callback-handler.json` must be imported. The callback handler must be published before testing the parent workflow, or button clicks will not fire.
+
+### External integrations
+
+Some workflows are called by external processes rather than by other n8n workflows.
+
+| Workflow | Called by |
+|----------|-----------|
+| AI Lead Qualification Agent | `mcp-server/index.js` via webhook |
+| Summary Digest | `mcp-server/index.js` via webhook |
+| Multi-System Lead Orchestration (planned) | AI Lead Qualification Agent via HTTP |
 
 ### Required credentials
 
@@ -798,7 +896,12 @@ SELECT id, vendor_name, status, status_reasons FROM invoices ORDER BY created_at
 - [ ] **Human-in-the-Loop Approval — Edit path:** When the human clicks Edit, re-run the AI Agent with the original draft and the human's edit notes. Loop back to the approval step until the human approves or rejects.
 - [ ] **Human-in-the-Loop Approval — Publish endpoint:** When the human clicks Approve, POST the refined draft to a real publishing endpoint (WordPress, Ghost, a custom API). Currently only the decision is logged; the approved draft isn't sent anywhere.
 - [ ] **Separate Telegram bots per workflow:** Currently all workflows with inbound Telegram Triggers share the XIRV Log Alerts bot, which limits one webhook at a time. Create a distinct bot per workflow via BotFather and register separate credentials in n8n. This eliminates the "most recently published wins" conflict.
-- [ ] **Workflows 9-10 (planned):** Multi-System Orchestration (HubSpot + Airtable + Google Calendar) and Ops Dashboard (cross-workflow aggregation and reporting).
+- [ ] **MCP Integration Server — Streaming responses:** For long-running tools, use MCP's streaming response pattern instead of a single JSON blob. Useful if `score_lead` is refactored to wait for the actual score rather than returning the webhook acknowledgment.
+- [ ] **MCP Integration Server — Authentication on tools:** Add an API key or OAuth requirement to the tools so they aren't callable by any local process. Currently the server trusts whatever process spawns it.
+- [ ] **MCP Integration Server — Additional tools:** Expose more n8n workflows. Candidates: `list_open_issues` (GitHub Notifier), `get_invoice` (query the invoices table by ID), `recent_errors` (query error_logs by severity).
+- [ ] **MCP Integration Server — VPS deployment:** Move the server and n8n to a VPS with a stable public URL. Removes the tunnel dependency and makes the MCP server reachable from remote Claude Code sessions.
+- [ ] **MCP Integration Server — HTTP transport:** Add HTTP Streamable transport as an alternative to stdio. Enables remote clients to connect without spawning a local process.
+- [ ] **Future workflows (planned):** Multi-System Lead Orchestration (HubSpot + Airtable + Google Calendar, triggered from the AI Lead Qualification Agent) and an Ops Dashboard (cross-workflow aggregation and reporting).
 
 ## About
 

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "xirv-mcp-server": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "D:\\projects\\n8n-automation-portfolio\\mcp-server\\index.js"
+      ],
+      "env": {}
+    }
+  }
+}

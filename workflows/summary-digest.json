@@ -1,0 +1,96 @@
+{
+  "name": "Summary Digest",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "summary-digest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "78a30f41-b19c-4511-9f00-8e7a06832a49",
+      "name": "Webhook",
+      "webhookId": "cbd0ddab-0c77-4649-a2e0-be630334d304"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH lead_stats AS (\n  SELECT\n    COUNT(*) FILTER (WHERE score = 'high') AS high_count,\n    COUNT(*) FILTER (WHERE score = 'medium') AS medium_count,\n    COUNT(*) FILTER (WHERE score = 'low') AS low_count,\n    COUNT(*) AS total_leads\n  FROM leads\n),\ninvoice_stats AS (\n  SELECT\n    COUNT(*) FILTER (WHERE status = 'valid') AS valid_count,\n    COUNT(*) FILTER (WHERE status = 'suspicious') AS suspicious_count,\n    COUNT(*) FILTER (WHERE status = 'invalid') AS invalid_count,\n    COUNT(*) AS total_invoices\n  FROM invoices\n),\nrecent_errors AS (\n  SELECT COUNT(*) AS error_count\n  FROM error_logs\n  WHERE created_at > NOW() - INTERVAL '24 hours'\n)\nSELECT jsonb_build_object(\n  'leads', (SELECT row_to_json(lead_stats) FROM lead_stats),\n  'invoices', (SELECT row_to_json(invoice_stats) FROM invoice_stats),\n  'errors_last_24h', (SELECT error_count FROM recent_errors),\n  'generated_at', NOW()\n) AS summary;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        208,
+        0
+      ],
+      "id": "b906d4e8-3321-4d57-8c0c-0f8fc61cb39e",
+      "name": "Build Summary",
+      "credentials": {
+        "postgres": {
+          "id": "IbRwiLg11WhiBmNv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.summary) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        416,
+        0
+      ],
+      "id": "bfb35d9e-dc5c-411d-a9dd-4f9c66197f4a",
+      "name": "Return Summary"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Build Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Summary": {
+      "main": [
+        [
+          {
+            "node": "Return Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "e84bfa56-c5e3-4f5c-bf84-a01455236f14",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "daae1a4cfdc8cedef8e4c0a51dea5436df6634717b0af4368ce8236758877cd8"
+  },
+  "id": "jtYmsKbCQJawVPKZ",
+  "tags": []
+}

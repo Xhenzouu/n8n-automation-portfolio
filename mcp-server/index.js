@@ -4,7 +4,13 @@ import { z } from "zod";
 import dotenv from "dotenv";
 
 // Load environment variables from .env
-dotenv.config();
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+dotenv.config({ path: join(__dirname, '.env') });
 
 // --- CONFIGURATION ---
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;

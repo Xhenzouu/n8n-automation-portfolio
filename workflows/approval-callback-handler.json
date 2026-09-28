@@ -1,0 +1,172 @@
+﻿[
+  {
+    "updatedAt": "2026-09-25T09:56:19.290Z",
+    "createdAt": "2026-09-25T09:38:46.209Z",
+    "id": "7on9IhhhTa03VIDo",
+    "name": "Approval Callback Handler",
+    "description": null,
+    "active": false,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {
+          "updates": [
+            "callback_query"
+          ],
+          "additionalFields": {}
+        },
+        "type": "n8n-nodes-base.telegramTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          0
+        ],
+        "id": "8e7b0089-b994-4b8d-b67f-5ca3e5c3a389",
+        "name": "Telegram Trigger",
+        "webhookId": "3d2ea7f8-8071-4f3b-8b01-50fd8bdb1983",
+        "credentials": {
+          "telegramApi": {
+            "id": "tBKfymaqPqy1NcNv",
+            "name": "Telegram account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "resource": "callback",
+          "queryId": "={{ $json.callback_query.id }}",
+          "additionalFields": {
+            "text": "Processing your decision..."
+          }
+        },
+        "type": "n8n-nodes-base.telegram",
+        "typeVersion": 1.2,
+        "position": [
+          208,
+          0
+        ],
+        "id": "b604a7b7-b1c0-41a0-a54c-6b83732e1289",
+        "name": "Acknowledge Click",
+        "webhookId": "5f8e6a79-8aba-48e2-ba85-08a6b2611032",
+        "credentials": {
+          "telegramApi": {
+            "id": "tBKfymaqPqy1NcNv",
+            "name": "Telegram account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "UPDATE draft_approvals\nSET\n  decision = '{{ $('Telegram Trigger').first().json.callback_query.data.split(\":\")[0] }}',\n  decided_at = NOW(),\n  decided_by = '{{ $('Telegram Trigger').first().json.callback_query.from.id }}'\nWHERE id = {{ $('Telegram Trigger').first().json.callback_query.data.split(\":\")[1] }};",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.6,
+        "position": [
+          416,
+          0
+        ],
+        "id": "e2a5c337-ace4-45f8-bdb7-7e26eaa48b0a",
+        "name": "Log Decision",
+        "credentials": {
+          "postgres": {
+            "id": "IbRwiLg11WhiBmNv",
+            "name": "Postgres account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "chatId": "={{ $('Telegram Trigger').first().json.callback_query.message.chat.id }}",
+          "text": "=Decision recorded: {{ $('Telegram Trigger').first().json.callback_query.data.split(\":\")[0].toUpperCase() }}\n\nDraft ID: {{ $('Telegram Trigger').first().json.callback_query.data.split(\":\")[1] }}\nRecorded at: {{ new Date().toISOString() }}",
+          "additionalFields": {}
+        },
+        "type": "n8n-nodes-base.telegram",
+        "typeVersion": 1.2,
+        "position": [
+          624,
+          0
+        ],
+        "id": "ad4b110e-c600-42a6-a200-b11240a08d2f",
+        "name": "Send Confirmation",
+        "webhookId": "144c472c-4cd6-406b-920a-90c3a9cb72f2",
+        "credentials": {
+          "telegramApi": {
+            "id": "tBKfymaqPqy1NcNv",
+            "name": "Telegram account"
+          }
+        }
+      }
+    ],
+    "connections": {
+      "Telegram Trigger": {
+        "main": [
+          [
+            {
+              "node": "Acknowledge Click",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Acknowledge Click": {
+        "main": [
+          [
+            {
+              "node": "Log Decision",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Log Decision": {
+        "main": [
+          [
+            {
+              "node": "Send Confirmation",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": false
+    },
+    "staticData": null,
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "a304b236-3dc0-4850-bae9-1e105e7bab37",
+    "activeVersionId": null,
+    "versionCounter": 40,
+    "triggerCount": 1,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-09-25T09:38:46.210Z",
+        "createdAt": "2026-09-25T09:38:46.210Z",
+        "role": "workflow:owner",
+        "workflowId": "7on9IhhhTa03VIDo",
+        "projectId": "5M8ZBPB80LKFCxjU",
+        "project": {
+          "updatedAt": "2026-09-21T02:07:58.815Z",
+          "createdAt": "2026-09-21T02:06:15.639Z",
+          "id": "5M8ZBPB80LKFCxjU",
+          "name": "Henson Brix  Arroyo <arroyobrix@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "e38df30d-366e-474b-976e-7d8ca68e4f43"
+        }
+      }
+    ]
+  }
+]

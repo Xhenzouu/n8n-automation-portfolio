@@ -4,645 +4,22 @@ Production-ready automation workflows built with self-hosted n8n. Integrates Git
 
 ## Quick Tour
 
-Ten production-quality workflows. Each teaches a distinct architecture pattern. Full details below.
+Ten production-quality workflows. Each teaches a distinct architecture pattern. Click a workflow for its architecture, verified behavior, screenshots, and gotchas.
 
 | # | Workflow | Pattern |
 |---|----------|---------|
-| 1 | GitHub Good First Issue Notifier | Scheduled poll → filter → email |
-| 2 | AI Log Classifier | Webhook → LLM classify → conditional Telegram alert |
-| 3 | Error Handler | Cross-workflow failure notification |
-| 4 | AF Homes Inquiry Intake | RAG pipeline with vector search and grounded reply drafting |
-| 5 | AI Lead Qualification Agent | Deterministic LLM scoring with machine-readable audit trail |
-| 6 | Invoice Processing Pipeline | PDF extraction + 3-branch validation with per-status routing |
-| 7 | Customer Support Agent | Conversational AI agent with tool calling and persistent memory |
-| 8 | Human-in-the-Loop Approval | AI refinement + Telegram inline keyboard approval |
-| 9 | MCP Integration Server | n8n workflows exposed as tools for Claude Code |
-| 10 | Workflow Health Monitor | Cross-workflow failure classification + retry + Telegram escalation |
+| 1 | [GitHub Good First Issue Notifier](docs/workflows/01-github-notifier.md) | Scheduled poll → filter → email |
+| 2 | [AI Log Classifier](docs/workflows/02-ai-log-classifier.md) | Webhook → LLM classify → conditional Telegram alert |
+| 3 | [Error Handler](docs/workflows/03-error-handler.md) | Cross-workflow failure notification |
+| 4 | [AF Homes Inquiry Intake](docs/workflows/04-af-homes-inquiry-intake.md) | RAG pipeline with vector search and grounded reply drafting |
+| 5 | [AI Lead Qualification Agent](docs/workflows/05-ai-lead-qualification-agent.md) | Deterministic LLM scoring with machine-readable audit trail |
+| 6 | [Invoice Processing Pipeline](docs/workflows/06-invoice-processing-pipeline.md) | PDF extraction + 3-branch validation with per-status routing |
+| 7 | [Customer Support Agent](docs/workflows/07-customer-support-agent.md) | Conversational AI agent with tool calling and persistent memory |
+| 8 | [Human-in-the-Loop Approval](docs/workflows/08-human-in-the-loop-approval.md) | AI refinement + Telegram inline keyboard approval |
+| 9 | [MCP Integration Server](docs/workflows/09-mcp-integration-server.md) | n8n workflows exposed as tools for Claude Code |
+| 10 | [Workflow Health Monitor](docs/workflows/10-workflow-health-monitor.md) | Cross-workflow failure classification + retry + Telegram escalation |
 
 **Stack:** n8n (self-hosted) · Groq · Google Gemini · Apify · Supabase (PostgreSQL + pgvector) · Telegram · Gmail · GitHub REST API
-
----
-
-## Projects
-
-### 1. GitHub "Good First Issue" Notifier
-
-Automatically checks a GitHub repository every weekday at 9:00 AM (Asia/Manila) for open issues labeled `good first issue` and emails a formatted summary. Skips the email when there's nothing to report.
-
-**Problem it solves:** Manually checking a repo for contribution opportunities is repetitive and easy to forget. This workflow runs on a schedule and surfaces new issues without any manual check.
-
-**Architecture:**
-
-```
-Schedule Trigger (weekday 9AM)
-→ GitHub: Get Issues (open, repo: xirv-systems)
-→ Filter: has 'good first issue' label AND is not a PR
-→ Edit Fields: format email subject + body
-→ Gmail: send summary email
-```
-
-**Key implementation details:**
-
-- **Schedule:** Cron expression `0 9 * * 1-5` with timezone `Asia/Manila`. Weekdays only.
-- **Label filtering:** GitHub's API returns labels as an array of objects, not strings. Filter uses `labels.some(l => l.name === 'good first issue')`.
-- **PR exclusion:** GitHub's issues endpoint returns pull requests too. Filter checks `pull_request === undefined` to exclude PRs.
-- **Empty-result handling:** Filter node outputs 0 items when nothing matches, which structurally prevents Gmail from sending. No email sent = no noise.
-- **Error handling:** Linked to a dedicated error workflow that emails the failure details.
-
-**Stack:** n8n (self-hosted) · GitHub REST API · Gmail API (OAuth2)
-
-**Estimated impact:** ~5 minutes saved per manual check × ~22 weekdays = **~110 minutes/month saved**.
-
-**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
-
----
-
-### 2. AI Log Classifier (Groq + Supabase + Telegram)
-
-Event-driven workflow that receives application logs via webhook, classifies severity using an LLM, persists every log to PostgreSQL, and sends real-time Telegram alerts for critical entries only.
-
-**Problem it solves:** Manual log review doesn't scale, and silent failures go unnoticed. This workflow triages logs automatically — everything gets stored, only critical issues interrupt you.
-
-**Architecture:**
-
-```
-Webhook (POST /log-classifier)
-→ HTTP Request: Groq API (openai/gpt-oss-20b) — classify severity
-→ Code: parse JSON response from Groq's content field
-→ Switch: route by severity (critical | warning | info)
-    ├── critical → Postgres INSERT → Telegram alert
-    ├── warning  → Postgres INSERT
-    └── info     → Postgres INSERT
-```
-
-**Key implementation details:**
-
-- **Groq API call via HTTP Request node** — demonstrates raw API understanding and gives full control over the request body.
-- **Structured JSON output:** Uses `response_format: { type: "json_object" }` and a system prompt that defines the exact schema. Temperature `0.1` for deterministic classification.
-- **Response parsing:** Groq returns the classification as a JSON string inside `choices[0].message.content`. A Code node runs `JSON.parse()` and flattens the fields.
-- **Cross-node data access:** The Telegram node references `$('Code in JavaScript').item.json.summary` (not `$json`) because the Postgres node's output no longer carries the classification fields forward.
-- **SQL escaping:** All string fields pass through `.replace(/'/g, "''")` to escape apostrophes before INSERT.
-- **Single table, three writers:** The `error_logs` table receives inserts from three separate Postgres nodes — one per severity branch.
-
-**Stack:** n8n (self-hosted) · Groq API · Supabase (PostgreSQL) · Telegram Bot API
-
-**Estimated impact:** Replaces manual log review. Critical alerts surface in seconds instead of during the next check.
-
-**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
-
----
-
-### 3. Error Handler (Supporting Workflow)
-
-Reusable error workflow that fires whenever a linked workflow fails.
-
-**Architecture:**
-
-```
-Error Trigger (fires on linked workflow failure)
-→ Gmail: send failure notification with error details
-```
-
-**Email includes:** workflow name, error message, last node executed, and a link to the failed execution in n8n.
-
-**Problem it solves:** Silent workflow failures go unnoticed until a stakeholder asks why something didn't happen. This workflow surfaces failures within minutes, with enough context to debug without re-running the workflow.
-
-**Why it matters:** Silent automation failures are worse than no automation.
-
-**Estimated impact:** Catches silent failures within minutes instead of hours.
-
-**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
-
----
-
-### 4. AF Homes Inquiry Intake — RAG Pipeline (Groq + Gemini + pgvector + Telegram)
-
-> **Portfolio demonstration inspired by hospitality and property-developer workflows. Not affiliated with, endorsed by, or built for AF Homes.**
-
-Event-driven inquiry pipeline: receives property inquiries via webhook, classifies category and priority with an LLM, extracts structured details, embeds the inquiry, retrieves semantically similar FAQ chunks from a pgvector store, drafts a grounded reply using retrieval-augmented generation (RAG), persists everything with a citation trail, and alerts high-priority inquiries via Telegram.
-
-**Problem it solves:** Property developers receive inquiries across categories (bookings, VIP card questions, careers, general). Triage is manual, response drafts are repetitive, and high-value leads get missed. This workflow automates first-pass triage and produces reply drafts grounded in actual company documentation — not generic LLM output.
-
-**Architecture:**
-
-```
-Webhook (POST /af-homes-inquiry)
-→ HTTP Request: Groq — classify category + priority, extract structured fields
-→ Code: parse Groq JSON response into flat fields
-→ HTTP Request: Gemini gemini-embedding-001 — embed the inquiry (1536 dims)
-→ Build RPC Body: Code node, formats vector as Postgres-compatible string
-→ Retrieve FAQ Chunks: Postgres node, calls match_faq_chunks RPC
-→ Build Draft Body: Code node, formats full request body for Groq
-→ Draft Reply: HTTP Request: Groq — generates grounded reply from retrieved context
-→ Execute a SQL query: Postgres INSERT into inquiries (with draft_reply + retrieved_sources)
-→ If: priority == high
-    ├── true  → Edit Fields → Call notify-telegram
-    └── false → (end, no alert)
-```
-
-**Key implementation details:**
-
-- **Two LLM calls per inquiry:** (1) classification + extraction with `gpt-oss-20b`, (2) reply drafting with the same model but grounded in retrieved context.
-- **Embedding with Gemini `gemini-embedding-001`:** Groq doesn't offer an embeddings endpoint. Gemini's embedding API uses a different auth header (`x-goog-api-key`) than Groq's.
-- **1536-dim embeddings:** `gemini-embedding-001` natively outputs 3072 dims, but pgvector's HNSW index caps at 2000. Truncated to 1536, a divisor of 3072, which balances quality and index compatibility.
-- **RAG via Postgres RPC, not PostgREST:** Supabase's PostgREST layer cached the old function signature after a `CREATE OR REPLACE FUNCTION` and returned empty arrays despite the function working in the SQL Editor. Solved by calling `match_faq_chunks` directly through n8n's Postgres node instead of the Supabase HTTP endpoint.
-- **Citation trail:** The `retrieved_sources` column stores a text array of the FAQ filenames used to generate the draft reply. Verify that the reply is actually grounded by inspecting this trail.
-- **Precomputed request bodies in Code nodes:** Both the RPC call and the Groq draft call build their full request bodies as JSON strings in Code nodes, then send via `Body Content Type: Raw` with `={{ $json.body_string }}`. This bypasses n8n's JSON template interpolation, which flattens arrays and breaks on newlines.
-- **Grounding prompt:** The system prompt explicitly says "grounded ONLY in the provided knowledge base excerpts. If the knowledge base doesn't cover the inquiry, say so politely."
-
-**Verified behavior:** For the inquiry *"How does the reservation process work? I want to understand the steps and fees."*, the drafted reply cited:
-- 2% non-refundable reservation fee (from `reservation-process.md`)
-- Two valid IDs + proof of billing + Data Privacy Consent (from `document-requirements.md`)
-- 20% down payment over 18 months (from `down-payment-terms.md`)
-- 30-day document window and 45–60 day timeline (from `reservation-process.md`)
-
-Every specific number was sourced from the retrieved FAQ chunks — none invented.
-
-**Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Google Gemini (`gemini-embedding-001`) · Supabase (PostgreSQL + pgvector) · Telegram Bot API
-
-**Estimated impact:** Replaces manual inquiry triage. Grounded draft replies reduce first-response time from minutes of drafting to seconds of review.
-
-**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
-
----
-
-### 5. AI Lead Qualification Agent (Groq + Apify + Supabase)
-
-**Status:** Slices 1 and 2 complete. Slices 3 and 4 deferred — see Roadmap.
-
-Event-driven workflow that receives inbound leads via webhook, enriches them with company data from Apify, uses an AI Agent to score them as high / medium / low against explicit countable criteria, and logs the score with a machine-readable audit trail to PostgreSQL.
-
-**Problem it solves:** Manual lead triage is subjective, inconsistent, and slow. Even LLM-based scoring is unreliable when the prompt uses adjectives instead of rules. This workflow demonstrates how to make an AI agent's scoring deterministic, auditable, and defensible — a reliability engineering problem, not just a prompting problem.
-
-**Architecture:**
-
-```
-Webhook (POST /lead-qualifier)
-→ Enrich Company: HTTP Request to Apify (company-data-enricher by domain)
-→ AI Agent: "Qualify Lead" — scores against 5 countable criteria
-    └── Groq Chat Model: openai/gpt-oss-20b (temperature 0.0)
-→ Parse Agent Output: Code node — JSON.parse + Title Case normalization + SQL escaping
-→ Log Lead: Postgres INSERT into leads table
-```
-
-**The determinism fix (the strongest story in this workflow):**
-
-The initial version used temperature 0.1 and a system prompt that described criteria with adjectives: *"enterprise company, specific request, decision-maker."* The same test payload scored **medium / medium / high** across three runs. The `high` run's reasoning invented a signal that wasn't present in the payload — *"implying the sender is a decision-maker"* — from a message that never named a role.
-
-The fix had three parts:
-
-1. **Temperature 0.0** — not 0.1. Deterministic greedy decoding.
-2. **Countable criteria** — replaced adjectives with 5 explicit signals and a numeric threshold: `high = 2+ criteria, medium = 1, low = 0`.
-3. **Strictness clause** — explicit instruction: *"Ambiguous cases lean toward the lower score, not the higher one. Do not infer signals that aren't stated."*
-
-Result: three identical runs of the same payload now return identical scores and identical `criteria_met` arrays. Verified across 6 runs (3× medium, 3× high).
-
-**Key implementation details:**
-
-- **Countable criteria over adjectives.** The system prompt defines 5 signals: decision-maker role, budget/approval, company maturity (from enrichment), timeline, specific solution request. The scoring rule is arithmetic, not judgment.
-- **Machine-readable audit trail.** The agent returns `criteria_met` as a JSON array of strings. Any reviewer can verify the score by counting the array — no interpretation of the LLM's prose required.
-- **Enrichment via Apify's company-data-enricher.** Domain-based lookup returns LinkedIn presence, domain age, technology stack, and RDAP registration data. No paid API keys required.
-- **Criterion 3 requires 2+ of 4 enrichment signals.** LinkedIn link alone doesn't pass it. This prevents a single signal from falsely flagging a company as mature.
-- **Manual JSON parsing over LangChain's Structured Output Parser.** The parser rejected valid LLM output when `criteria_met` contained 4+ items. Replaced with a Code node that strips markdown fences, `JSON.parse()`s the raw string, and handles the shape in code — same pattern used in Projects 2 and 4.
-- **Empty-response guard.** Transient Groq failures sometimes return an empty `content` string. The Parse Agent Output node detects this, logs the lead with `score: low` and a clear `"Classification failed"` reasoning, and avoids losing the lead entirely.
-- **Title Case normalization in code, not in the prompt.** LLM casing drifted between `"SPECIFIC SOLUTION REQUEST"` and `"Specific Solution Request"` even at temperature 0. Fixed deterministically via `.replace(/\b\w/g, l => l.toUpperCase())` in the Code node.
-
-**Verified behavior (determinism test, 2026-09-23):**
-
-Three identical runs of a medium-signal lead with empty enrichment (`maria@acme.ph`) returned:
-- `score: medium` all 3 times
-- `criteria_met: ["Specific Solution Request"]` all 3 times
-- `enrichment_summary.domain_age: null`
-
-Three identical runs of a high-signal lead with enrichment (`juan@example.com` — IANA-reserved domain with populated RDAP data):
-- `score: high` all 3 times
-- `criteria_met: ["Decision-Maker Role", "Budget Or Approval", "Company Maturity", "Timeline", "Specific Solution Request"]` all 3 times
-- `enrichment_summary.domain_age: "31 years"`
-
-The `Company Maturity` criterion fires only when enrichment supports it. When enrichment returns empty, the criterion stays absent and the score reflects only the signals present in the message.
-
-**Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Apify (`company-data-enricher`) · Supabase (PostgreSQL) · LangChain AI Agent node
-
-**Estimated impact:** Reduces lead triage from ~10 minutes of manual review to ~30 seconds per lead. Deterministic scoring eliminates the review-and-correct cycle that inconsistent LLM output forces.
-
-**Gotchas specific to this workflow:**
-
-- **LLM classification is not deterministic by default.** Temperature 0.1 is not "low enough" for consistent scores on classification tasks. Use temperature 0 for any workflow where the same input should produce the same output.
-- **Adjectives in prompts produce nondeterministic scoring.** "Enterprise company, specific request, decision-maker" is subjective. Countable criteria with explicit thresholds remove the LLM's room for interpretation.
-- **The AI Agent's Chat Model output may appear empty.** With the Tools Agent architecture, the model's first response is a tool call (`finish_reason: "tool_calls"`), not a text completion. The final output is the agent's parsed JSON. Don't debug the empty Chat Model output.
-- **The LangChain Structured Output Parser is fragile with longer arrays.** It rejected valid JSON when `criteria_met` contained 4+ items. Manual `JSON.parse()` in a Code node is more reliable and easier to debug.
-- **Nested field access on external API responses silently returns undefined.** Apify returns `domainInfo.domainAge`, not `domainAge`. Accessing the wrong path doesn't throw — it returns undefined and the criterion silently fails. Verify field paths against actual API output before wiring them into prompts.
-- **Title Case normalization belongs in code, not in the prompt.** Adding "use Title Case" to the system prompt reduces but does not eliminate casing drift. Deterministic post-processing in a Code node is the correct fix.
-- **Inline array expressions in n8n's Postgres Query field are fragile.** The `ARRAY[...]` construction with arrow functions and nested quotes broke silently in Project 4 and was avoided here. Precompute SQL-safe values in a Code node.
-- **Empty LLM responses happen.** Guard against them explicitly. A lead with a failed classification is still a lead — log it with a failure marker rather than dropping it.
-- **n8n's Header Auth credential: the "Name" field is the HTTP header key, not a display label.** Setting `Name: Apify API` produces `ERR_INVALID_HTTP_TOKEN` because spaces aren't valid in HTTP header names. Use `Name: Authorization`, `Value: Bearer <token>`. The credential's human-readable label is set separately when you name the credential during save.
-
-**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
-
----
-
-### 6. Invoice Processing Pipeline (Groq + Supabase + Telegram)
-
-**Status:** v1.0.0 published. OCR support and amount formatting deferred to roadmap.
-
-Event-driven invoice processing pipeline: receives PDF invoices via Telegram, extracts text from the PDF, uses an LLM to pull structured fields, validates the vendor against a reference table, classifies the invoice as valid / suspicious / invalid, and routes to one of three branches with distinct Postgres persistence and Telegram notifications.
-
-**Problem it solves:** Manual invoice entry is slow and error-prone. Vendor fraud, duplicate submissions, and typo'd amounts go unnoticed until they reach accounting. This workflow automates first-pass invoice intake with a rule-based validation layer, produces an audit trail for every submission (including rejections), and alerts the submitter with context-specific messaging.
-
-**Architecture:**
-
-```
-Telegram Trigger (receives PDF document)
-→ Extract PDF Text (read text layer from binary)
-→ Build Groq Body (Code node, precompute JSON body)
-→ Extract Fields with Groq (structured field extraction)
-→ Parse Invoice Fields (Code node, JSON.parse + validate schema)
-→ Look Up Vendor (Postgres SELECT against vendors table)
-→ Compute Validation Status (Code node, apply rules)
-→ Build Invoice SQL (Code node, precompute SQL string with null handling)
-→ Route by Status (Switch on status field)
-    ├── valid       → Insert Valid Invoice (Postgres) → Send Valid Confirmation (Telegram)
-    ├── suspicious  → Insert Suspicious Invoice (Postgres) → Send Suspicious Warning (Telegram)
-    └── invalid     → Insert Invalid Invoice (Postgres) → Send Rejection (Telegram)
-```
-
-**Key implementation details:**
-
-- **Telegram as input surface.** The Telegram Trigger node receives PDF documents directly. No file upload endpoint needed. The trigger's "Download Images/Files" option fetches the binary and exposes it as `binary.data`.
-- **PDF text extraction before AI.** `Extract from PDF` reads the text layer natively. The AI Agent receives plain text, not binary. This eliminates the multimodal complexity and keeps the extraction step deterministic.
-- **Structured field extraction with Groq.** Fields extracted: `vendor_name`, `invoice_number`, `amount`, `currency`, `invoice_date`, `due_date`, `line_items_summary`. `response_format: json_object` forces valid JSON. Temperature 0 for determinism.
-- **Vendor validation against a reference table.** The `vendors` table contains the canonical list of approved vendors. Lookup is case-insensitive and escapes SQL metacharacters to prevent injection from LLM-extracted text.
-- **Three-branch classification with explicit rules.** Valid = vendor found, active, positive amount, valid currency, coherent dates. Suspicious = valid vendor but one of: amount exceeds threshold, non-PHP currency, dates in wrong order, or future invoice date. Invalid = vendor not found, inactive, or missing required fields. Precedence: invalid > suspicious > valid.
-- **Machine-readable audit trail.** Every invoice is written to the `invoices` table regardless of status. The `status_reasons` array documents exactly why an invoice was flagged. Reviews and audits can query by status without re-running the workflow.
-- **Precomputed SQL with null handling.** The `Build Invoice SQL` Code node uses `esc()` and `num()` helper functions that emit the SQL keyword `NULL` unquoted for null values. This replaced inline string interpolation, which broke on the DATE columns when the LLM extracted null for `invoice_date` or `due_date`.
-- **Three-branch routing.** The Switch node reads a `status` field computed by the upstream Code node. Each branch has its own Postgres Insert and Telegram Send, with distinct message text.
-
-**Verified behavior (2026-09-24):**
-
-Three test invoices processed end-to-end:
-
-| Input | Vendor lookup | Classification | Result |
-|-------|--------------|----------------|--------|
-| Acme Office Supplies, PHP 15,750 | Found, active | valid | Inserted, confirmation sent |
-| Acme Office Supplies, USD 250 | Found, active | suspicious (non-PHP currency) | Inserted, warning sent |
-| Fictional Corp Pty Ltd., USD 500 | Not found | invalid (vendor not found) | Inserted, rejection sent |
-
-Supabase `invoices` table contains one row per status after cleanup, confirming all three branches persist data.
-
-**Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Telegram Bot API · Supabase (PostgreSQL)
-
-**Estimated impact:** Replaces manual first-pass invoice triage. Reduces per-invoice processing from ~5 minutes of manual entry and validation to under 10 seconds of automated processing plus a Telegram review notification for suspicious and invalid cases.
-
-**Gotchas specific to this workflow:**
-
-- **The `Extract from PDF` node fails silently on scanned PDFs.** Image-only PDFs return an empty string or garbled text instead of an error. There is no validation that the extracted text is meaningful. Workflows handling PDFs should validate the extraction output before passing it downstream. For scanned documents, add an OCR step with a separate tool.
-- **The `Extract from PDF` node returns more than just text.** Output includes PDF metadata: `numpages`, `info.PDFFormatVersion`, `info.Author`, `info.Creator`, `info.Language`, plus the `text` field. Useful for logging, but be aware the output shape is larger than expected.
-- **`Extract from File` does not validate the extracted text.** A 117 kB text-layer PDF and a corrupted PDF both produce output the node doesn't validate. Add downstream checks if PDF quality matters.
-- **Nested field access on external API responses silently returns undefined.** The `Extract from PDF` node returns metadata at `info.Author` and `info.Creator` (nested), while the text is at the top-level `text` field. Verify field paths before referencing them.
-- **Multi-line PDF text breaks inline JSON body interpolation.** The same trap from Project 4 and Project 5. The fix is a `Build Groq Body` Code node that precomputes the full JSON body via `JSON.stringify()` and sends it as Raw. Same pattern across all three workflows.
-- **Nullable fields in SQL string interpolation produce `'null'` (quoted string) instead of the SQL keyword `NULL`.** Postgres rejects `'null'` for DATE columns. Fix: precompute the full INSERT as a string in a Code node with helper functions that emit `NULL` unquoted for null values.
-- **`$json` after a Postgres Insert node refers to `{success: true}`, not the input data.** All downstream references (Telegram message fields) must reach back to an earlier node via `$('Node Name').first().json.field`. Fourth occurrence of this trap across the portfolio.
-- **Telegram Trigger uses webhooks, which require a publicly reachable HTTPS URL in production.** Test mode uses n8n's tunnel; production requires a VPS, Cloudflare Tunnel, or a similar stable ingress. The n8n `--tunnel` flag is deprecated and non-functional in v2.
-- **The `Always Output Data` setting is required on Postgres nodes whose SELECT may return zero rows.** Without it, an empty result terminates the workflow before downstream branches can handle the "not found" case.
-- **Groq's `response_format: json_object` mode does not accept a JSON Schema.** The schema must be communicated via the prompt. Unlike OpenAI's Structured Outputs, Groq validates only that output is valid JSON, not that it matches a specific shape.
-
-**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
-
----
-
-### 7. Customer Support Agent with Tool Calling (Groq + Supabase + Telegram)
-
-**Status:** v1.0.0 published. Multi-language support, SLA priority, and human-agent reply routing deferred to roadmap.
-
-Conversational Telegram support agent where an LLM decides which tool to call based on the customer's message. Three tools available: order lookup, shipping lookup, and escalation to a human agent. Persistent conversation memory across messages. Sub-workflow used as a tool demonstrates the agentic pattern that job listings mean by "AI Agents."
-
-**Problem it solves:** Support teams waste time on repetitive lookup questions ("where is my order?") while complex issues get lost. This workflow automates the lookup path, resolves simple questions instantly, and escalates complex cases to a human with full context — including the customer's chat ID and the reason for escalation.
-
-**Architecture:**
-
-```
-Telegram Trigger (receives customer message)
-→ AI Agent "Support Agent"
-    ├── Groq Chat Model: openai/gpt-oss-20b (temperature 0)
-    ├── Postgres Chat Memory (session_key = Telegram chat ID)
-    └── Tool connector:
-        ├── lookup_order (Postgres Tool, SELECT against orders)
-        ├── lookup_shipping (Postgres Tool, JOIN orders + shipping)
-        └── escalate_to_human (Call n8n Workflow Tool → escalate-and-notify)
-→ (AI Agent produces grounded reply)
-→ Telegram Trigger already routes the reply via the agent's response
-```
-
-**Sub-workflow `escalate-and-notify`:**
-
-```
-Execute Sub-workflow Trigger (reason, order_number, chat_id)
-→ Postgres INSERT into escalations
-→ Telegram Send to admin chat
-→ Edit Fields (returns confirmation string to the parent)
-```
-
-**Key implementation details:**
-
-- **Three tools, each with a specific purpose.** The agent's tool selection is driven by the `Description` field on each tool node. If descriptions overlap, the agent calls the wrong tool. Clear, non-overlapping descriptions produce correct selection.
-- **`lookup_order`** takes `order_number` and returns status, items, total, order date.
-- **`lookup_shipping`** takes `order_number` (not tracking number — customers don't know those) and JOINs `shipping` to `orders` to return carrier, location, estimated delivery, status.
-- **`escalate_to_human`** uses the Call n8n Workflow Tool pattern. The agent calls this tool with `reason` and `order_number` (both from `$fromAI()`), plus `chat_id` from the Telegram Trigger context. The sub-workflow handles the database write and admin notification.
-- **Sub-workflow as tool is the portfolio differentiator.** The agent treats the composite capability as one tool. Any future change to escalation (add Slack, add a ticket system, add priority logic) happens in the sub-workflow without touching the agent.
-- **Persistent memory via Postgres Chat Memory.** The `session_key` is the Telegram chat ID, so each customer gets their own conversation history. Memory persists across n8n restarts. The agent remembers context across messages: "What is the status of that order?" resolves to the order number mentioned in the previous turn.
-- **Temperature 0** for tool selection. Reasoning models might pick different tools based on subtle phrasing at higher temperatures. Temperature 0 makes tool selection deterministic.
-- **System prompt includes operational rules:** currency is PHP, dates use ISO format, ask for order number if not provided.
-
-**Verified behavior (2026-09-24):**
-
-| Test | Message | Tool called | Result |
-|------|---------|-------------|--------|
-| A | "What is the status of order ORD-2026-002?" | `lookup_order` | Reply includes order status, items, total |
-| B | "When will my order ORD-2026-001 arrive?" | `lookup_shipping` | Reply includes LBC carrier, Manila Hub location, 2026-09-25 delivery estimate |
-| C | "This is unacceptable. I want to speak to a manager about order ORD-2026-005." | `escalate_to_human` | Row inserted into `escalations`, admin Telegram notification delivered |
-| D | Message 1: "My order number is ORD-2026-001" / Message 2: "What is the status of that order?" | `lookup_order` (from memory) | Reply resolves "that order" to ORD-2026-001 without re-prompting |
-
-All four tests verify: correct tool selection, correct parameter extraction via `$fromAI()`, grounded replies from tool results, and persistent conversation memory.
-
-**Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Supabase (PostgreSQL) · Telegram Bot API · Postgres Chat Memory · LangChain AI Agent node with tool calling
-
-**Estimated impact:** Replaces first-line support triage for order and shipping inquiries. Simple lookups resolve in under 10 seconds without human intervention. Complex cases escalate with full context (reason, order number, chat ID) in the same time window.
-
-**Gotchas specific to this workflow:**
-
-- **Tool descriptions drive agent behavior more than prompts.** The `Description` field on each tool node is what the LLM reads when deciding which tool to call. Vague or overlapping descriptions cause wrong-tool selection. Tighten descriptions before tweaking the system prompt.
-- **Sub-workflow trigger node default name is `When Executed by Another Workflow`, not `Execute Sub-workflow Trigger`.** Expressions in the sub-workflow that reference the trigger by name break if you assume the wrong default. Either rename the node or update every reference.
-- **Sub-workflows must be published to be callable.** The Call n8n Workflow Tool node shows an empty dropdown if the target sub-workflow is unpublished. Publish the sub-workflow before wiring the parent.
-- **Sub-workflow references use instance-specific IDs.** The parent workflow JSON contains a hardcoded `workflowId` reference to the sub-workflow. Importing the parent JSON on a different n8n instance leaves a dangling reference. The README Setup section documents the import order and re-linking steps.
-- **Postgres Chat Memory table schema differs from expectations.** The auto-created `n8n_chat_histories` table has columns `id`, `session_id`, `message` (jsonb). There is no `created_at` column. Order by `id DESC` for chronological queries.
-- **LLM date reformatting can shift dates by one day.** Even with the system prompt instructing "use ISO format exactly as returned by tools," the model rendered `2026-09-15` as `2026-09-14` in one test. Root cause is likely timezone conversion during the model's date parsing. Cosmetic issue, not a data corruption issue.
-- **Sub-workflow trigger nodes need explicit input fields defined.** Clicking "Execute step" on the trigger without providing inputs produces `undefined` values in downstream nodes. Test the sub-workflow from the parent workflow, not in isolation, unless you manually provide all input values.
-
-**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
-
----
-
-### 8. Human-in-the-Loop Approval (Groq + Supabase + Telegram Inline Keyboard)
-
-**Status:** v1.0.0 published. Edit loop, publish endpoint, and separate-bot isolation deferred to roadmap.
-
-Two-workflow approval system where an AI Agent refines a submitted draft and a human approves, rejects, or requests edits via Telegram inline keyboard buttons. The decision is logged to Supabase and a confirmation is sent back to the reviewer.
-
-**Problem it solves:** Content teams and marketing workflows need human oversight before publishing AI-generated content. This workflow automates the refinement step (tone, clarity, length) and provides a structured approval interface without leaving Telegram. Every decision is auditable.
-
-**Architecture:**
-
-Two workflows:
-
-```
-Parent workflow (human-in-the-loop-approval.json):
-Webhook (POST /draft-approval)
-→ AI Agent "Refine Draft" (Groq openai/gpt-oss-20b, temperature 0.3)
-    └── Groq Chat Model sub-node
-→ Insert Draft (Postgres INSERT ... RETURNING id)
-→ Send for Approval (Telegram Send Message with Inline Keyboard: Approve / Reject / Edit)
-```
-
-```
-Callback handler workflow (workflow-incident-callback-handler.json, published):
-Telegram Trigger (Callback Query)
-→ Acknowledge Click (Telegram Answer Query)
-→ Log Decision (Postgres UPDATE draft_approvals)
-→ Send Confirmation (Telegram Send Message to the original chat)
-```
-
-**Key implementation details:**
-
-- **Two-workflow design over Wait node.** The Wait node approach requires storing a resume URL in Supabase, calling it from the callback handler, and handling timeouts. The two-workflow pattern is simpler: Telegram callback queries arrive as new webhook events, and the callback handler updates the database row directly. Same user experience, less machinery.
-- **Draft row created before Telegram send.** The parent workflow inserts the draft into `draft_approvals` before sending to Telegram. The `RETURNING id` clause provides the row ID. That ID is embedded in each button's `callback_data` as `decision:id`.
-- **Inline keyboard with dynamic callback data.** The Approve / Reject / Edit buttons each carry a different `callback_data` value: `approve:42`, `reject:42`, `edit:42`. The callback handler splits on `:` to extract the decision and the row ID.
-- **Answer Query node acknowledges the click.** Telegram requires the bot to acknowledge callback queries within 10 seconds. Without the `Answer Query` node, the button shows a spinner to the user until it times out.
-- **Audit trail per decision.** Every draft is persisted with its original and refined versions. Every decision is stamped with `decided_at` and `decided_by` (the Telegram user ID of the reviewer).
-
-**Verified behavior (2026-09-25):**
-
-| Step | Result |
-|------|--------|
-| POST a casual draft to /draft-approval | Webhook received, workflow started |
-| AI Agent refines the draft | Tone and clarity improved; casual language normalized |
-| Insert Draft (Postgres RETURNING id) | Row inserted with id=1 |
-| Telegram Send with inline keyboard | Message delivered with three buttons |
-| Human clicks Approve | Callback query received by callback handler |
-| Answer Query | Button loading indicator cleared |
-| Postgres UPDATE | Row updated: decision=approve, decided_by=YOUR_TELEGRAM_CHAT_ID |
-| Telegram Send confirmation | Confirmation message delivered to reviewer |
-
-**Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Supabase (PostgreSQL) · Telegram Bot API (inline keyboard + callback query)
-
-**Estimated impact:** Reduces content approval turnaround from email threads and Slack messages to a single Telegram button click. Every decision is logged with full context for audit.
-
-**Gotchas specific to this workflow:**
-
-- **Only one Telegram Trigger can hold a bot's webhook at a time.** If multiple workflows use Telegram Triggers with the same bot, the most recently published one wins. Others silently stop firing. Fix: use a separate bot per workflow with an inbound trigger. Create each via BotFather and add a distinct credential in n8n.
-- **The `$json` reference is replaced after Telegram Answer Query.** The Answer Query node returns `{ok: true, result: true}`, which overwrites `$json` for downstream nodes. All references to the callback query data must use `$('Telegram Trigger').first().json.callback_query.*`.
-- **`callback_data` has a 64-byte limit.** The `decision:id` format fits comfortably, but do not pack additional data into it. Telegram rejects buttons whose callback_data exceeds 64 bytes.
-- **Telegram inline keyboard markdown parsing.** If the draft text contains markdown characters (`*`, `_`, `[`), Telegram may interpret them as formatting. Set Parse Mode to `None` on the Send Message node if drafts may contain these characters.
-- **Callback queries arrive as a distinct event type.** The Telegram Trigger's `Trigger On` setting must include `Callback Query` for the callback handler. If it's set to `Message` only, button clicks will not fire the workflow.
-- **A known n8n bug causes callback queries to not fire when the Restrict to Chat IDs field is populated.** Leave that field blank for workflows that receive button clicks.
-
-**Deferred:**
-- Edit loop (when `decision = 'edit'`, re-run the refinement with the human's edit notes)
-- Publish path (when `decision = 'approve'`, POST the refined draft to a real publishing endpoint)
-- Separate Telegram bots per workflow to eliminate webhook conflicts
-
-**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
-
----
-
-### 9. MCP Integration Server (n8n Workflows as Claude Code Tools)
-
-**Status:** v1.0.0 published. Additional tools and streaming responses deferred to roadmap.
-
-A small Node.js server that turns existing n8n workflows into tools that Claude Code (or any MCP-compatible AI agent) can call in natural language. Ask "what are my current lead and invoice stats?" and Claude Code calls the appropriate workflow, retrieves the JSON response, and answers conversationally. No custom code on the AI side. No custom integration code on the n8n side. Just a standardized protocol that both speak.
-
-**Problem it solves:** Existing automation lives behind webhooks, dashboards, and scheduled jobs. To use that data, someone has to open n8n, find the workflow, and read the results manually. This server exposes the same workflows as callable tools that any MCP-compatible AI assistant can use. The automation becomes an extension of the AI, not a separate tool.
-
-**Architecture:**
-
-```
-Claude Code session
-→ xirv-mcp-server (Node.js, stdio transport)
-    ├── Tool: score_lead → POST to n8n webhook → AI Lead Qualification Agent
-    └── Tool: get_summary → POST to n8n webhook → Summary Digest workflow
-→ Response returned to Claude Code
-→ Claude Code answers in natural language
-```
-
-Two components:
-
-- **`mcp-server/index.js`**: Node.js server using `@modelcontextprotocol/sdk`. Defines two tools with Zod input schemas, POSTs to n8n webhooks, returns JSON.
-- **`.mcp.json`** (repo root): Registers the server at project scope. When Claude Code runs from the repo root, it spawns the server automatically.
-
-**The differentiator:** This is not "I built an MCP server." It is "I turned my existing automation into tools an AI agent can use." The distinction matters. The first framing is jargon. The second is a capability.
-
-**Key implementation details:**
-
-- **Two tools, no wrapper code.** `score_lead` accepts `{name, email, company, message}` and returns a lead classification. `get_summary` accepts no arguments and returns a status digest. Each tool is a thin proxy over an n8n webhook. No business logic in the MCP server.
-- **Stdio transport.** The server speaks MCP over standard input/output. Claude Code spawns it as a child process. No ports, no HTTP, no network configuration.
-- **Project-scoped `.mcp.json`.** Lives at the repo root, uses a relative path (`mcp-server/index.js`), and travels with the repo. Anyone cloning can run `claude` from the repo root and connect.
-- **Startup validation.** Five checks on both webhook URLs before the server runs: variable is set, starts with `https://`, no doubled `https://` prefix, no doubled slash before `/webhook/`, contains `/webhook/`. Any failure exits with a `[FATAL]` message. This catches URL malformations at startup instead of at tool-call time.
-- **Explicit `.env` path resolution.** The server loads `.env` relative to its own script location, not the process CWD. Without this fix, running `claude` from the repo root would break `.env` loading because Claude Code spawns the server with the session's CWD.
-- **Zero secrets in `.mcp.json`.** The config only defines the command (`node`), the arguments (`mcp-server/index.js`), and an empty env object. All secrets live in `mcp-server/.env`, which is gitignored. The committed `.env.example` shows the shape.
-- **Async `score_lead`.** The n8n webhook returns `{"message":"Workflow was started"}` immediately. The actual scoring happens asynchronously. Claude Code observes this pattern and explains it back to the user without prompting.
-
-**Verified behavior (2026-09-27):**
-
-Claude Code session transcript:
-
-```
-User: What are my current lead and invoice stats?
-
-Claude Code: [calls get_summary via xirv-mcp-server]
-
-Response: Here are your current stats from xirv-mcp-server, generated
-2026-09-27 03:17 UTC.
-
-Leads: 37 total
-
-| Score  | Count | Share |
-|--------|-------|-------|
-| High   | 14    | 38%   |
-| Medium | 23    | 62%   |
-| Low    | 0     | 0%    |
-
-Invoices: 3 total
-
-| Status     | Count |
-|------------|-------|
-| Valid      | 1     |
-| Suspicious | 1     |
-| Invalid    | 1     |
-
-Errors in the last 24h: 0
-
-Two things stand out:
-- No leads are scored low. That could mean your leads really are good, or
-  that the scoring thresholds are too generous.
-- Two of your three invoices are flagged — you may want to review those two.
-```
-
-![Claude Code session calling get_summary](docs/claude-code-get-summary.png)
-
-Second query verifying the other tool:
-
-```
-User: Score this lead: Maria Santos, maria@acme.ph, Acme Corp.
-Message: We need an enterprise automation solution for our sales team.
-
-Claude Code: [calls score_lead via xirv-mcp-server]
-
-Response: I sent Maria Santos's lead, but I didn't get a score back. The
-server only returned "Workflow was started", so the workflow was triggered
-but no result came back with it.
-
-I checked the summary again right after. It still shows 37 leads (14 high,
-23 medium), so either the lead hasn't been saved yet or the workflow is
-still running or failed. Errors in the last 24h are still 0.
-
-Likely cause: the lead-scoring workflow's Webhook node is probably set to
-respond "Immediately". That makes n8n acknowledge the request right away
-instead of waiting for the score. To have score_lead return the actual score:
-1. In the Webhook node, set Respond to "Using 'Respond to Webhook' Node"
-   (or "When Last Node Finishes").
-2. Add a Respond to Webhook node at the end of the workflow that returns
-   the score, tier and reasoning.
-
-I can look at the workflow JSON and the MCP server code in the repo to
-confirm this and make the change. Or I can check the summary again in a
-bit to see whether Maria's lead shows up.
-```
-
-![Claude Code session calling score_lead](docs/claude-code-score-lead.png)
-
-Both tool calls verified end-to-end: natural-language prompt, MCP tool selection, webhook invocation, real data from Supabase, natural-language response.
-
-**Stack:** Node.js · `@modelcontextprotocol/sdk` · Zod · dotenv · n8n (as backend) · Claude Code (as client) · Cloudflare Tunnel
-
-**Estimated impact:** Exposes existing automation to any MCP-compatible AI agent. Claude Code can now query Supabase-backed workflows in natural language without custom code on either side. The same pattern applies to any future workflow: add a webhook, expose it as a tool, and the AI gets a new capability.
-
-**Gotchas specific to this workflow:**
-
-- **Four classes of URL malformation can silently break webhook calls.** Doubled `https://` prefix. Doubled domain suffix (`.trycloudflare.com.trycloudflare.com`). Doubled slash before `/webhook/`. Stale tunnel URL after a restart. Startup validation catches the first three. The fourth requires manual verification when the tunnel changes.
-- **`.env` files resolve relative to the process CWD by default.** When Claude Code spawns the MCP server, the CWD is the Claude Code session directory, not the server's directory. Loading `.env` via `dotenv.config()` alone fails. Fix by resolving the path explicitly: `dotenv.config({ path: join(__dirname, '.env') })`.
-- **Project-scoped MCP servers require approval on first use.** Claude Code prompts for trust when it sees `.mcp.json` in a repo. Status shows "Pending approval" until you run `claude` interactively and confirm. Approval persists in `~/.claude.json`.
-- **Only one process can bind stdio at a time.** Running the MCP Inspector and Claude Code simultaneously causes the second process to fail silently. Disconnect the Inspector before starting Claude Code, or use separate machines.
-- **`@modelcontextprotocol/inspector` spawns its own child process on Connect.** The working directory is wherever `npx` was invoked. Run it from inside `mcp-server/` so `index.js` resolves. Or use the `--cwd` flag to set the directory explicitly.
-- **Windows folder locks prevent `Move-Item`.** A running `node.exe`, an open VS Code window, or a PowerShell session with the folder as CWD will block the move. Kill processes, close VS Code, `cd C:\` in every shell, then retry. `Get-CimInstance Win32_Process` finds locks.
-- **Leading whitespace in `.gitignore` patterns is preserved.** A pattern like `  node_modules/` matches a directory name with two leading spaces, not the actual `node_modules/` folder. `git check-ignore -v` shows the pattern as it's interpreted. Fix by removing the whitespace.
-- **Relative paths in `.mcp.json` require Claude Code to spawn from the repo root.** If you run `claude` from a subdirectory, the relative path breaks. Documented behavior: always `cd` to the repo root before starting Claude Code.
-- **Absolute paths in `.mcp.json` work but don't travel with the repo.** A reviewer cloning the repo would need to edit the file. The relative path avoids this. Both are valid; relative is preferred for portability.
-
-**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
-
----
-
-### 10. Workflow Health Monitor
-
-**Status:** Shipped
-
-**Problem statement**
-
-Automations break silently. A failed n8n workflow leaves an execution row in the database, but nobody is notified unless an operator opens the Executions tab. Across the job postings I scraped for Automation Specialist and AI Operations roles, reliability and error handling appeared in every single one. This project demonstrates cross-workflow health monitoring end to end: detection, classification, retry, escalation, and human acknowledgement.
-
-**Architecture**
-
-A scheduled trigger pulls recent failed executions from the n8n Public API. Each execution's full payload is fetched individually, then stripped to six fields to keep memory flat. The slimmed items are aggregated into one batch and sent to Groq in a single classification call. The classifier returns a JSON array with one classification per item, following a six-class taxonomy with temperature 0. A Switch routes the classified items into three branches: transient, permanent, unknown. Each branch writes to `workflow_incidents`. The transient branch also retries the failed execution via the n8n retry endpoint and writes the outcome back to the incident row. The permanent branch sends a Telegram escalation with two inline buttons: `Acknowledge` and `Investigate`.
-
-A second workflow, `Workflow Incident Callback Handler`, receives the button press, marks the incident acknowledged in the database, and dismisses the Telegram loading spinner.
-
-**Key implementation details**
-
-- **Batched classification.** All failures classified in one Groq call instead of N calls. The free-tier TPM ceiling (8,000 tokens per rolling 60 seconds) makes per-item classification unworkable at any Wait interval; batching sidesteps it. Effective cost: roughly 2,700 tokens per 20-item batch.
-- **Six-class taxonomy.** `transient_network`, `transient_rate_limit`, `permanent_auth`, `permanent_schema`, `permanent_config`, `unknown`. Temperature 0 for deterministic output. `reasoning_effort: low` on `gpt-oss-20b` to keep reasoning tokens from consuming the JSON response budget.
-- **Idempotent writes.** `workflow_incidents` carries a unique constraint on `(execution_id, classification)`. The insert uses `ON CONFLICT ... DO UPDATE SET retry_attempted = workflow_incidents.retry_attempted` to self-touch. Re-runs do not duplicate, do not error, and keep the downstream retry chain alive.
-- **Retry policy.** One attempt per incident. Transient items are retried via `POST /api/v1/executions/{id}/retry`. Outcome written to `retry_attempted`, `retry_count`, `retry_succeeded`. `Retry Failed Execution` uses `Using JSON` with `JSON.stringify({ loadWorkflow: true })` because n8n's `Using Fields Below` mode stringifies booleans.
-- **Human-in-the-loop.** Telegram inline keyboard. `Acknowledge` sends a callback query to the handler workflow and writes `acknowledged_at`. `Investigate` is a URL button that opens the failing execution in the browser.
-- **Memory discipline.** The n8n executions API with `includeData=true` returns roughly 600 KB per execution. An `Extract Incident Fields` Code node strips to six fields before aggregating, reducing the working set from ~12 MB to ~4 KB per run.
-
-**Verified behavior**
-
-- [wf10-canvas.png](docs/wf10-canvas.png) — full workflow canvas, all nodes green after an end-to-end run.
-- [wf10-classify-failure.png](docs/wf10-classify-failure.png) — single Groq call returning 20 classifications with confidence and reasoning per item.
-- [wf10-incidents-mixed.png](docs/wf10-incidents-mixed.png) — `workflow_incidents` rows showing mixed classifications and confidence scores.
-- [wf10-incidents-distribution.png](docs/wf10-incidents-distribution.png) — classification counts across the taxonomy.
-- [wf10-telegram-escalation.png](docs/wf10-telegram-escalation.png) — Telegram escalation with Acknowledge and Investigate buttons.
-- [wf10-callback-handler.png](docs/wf10-callback-handler.png) — Workflow Incident Callback Handler execution, all four nodes green.
-- [wf10-incidents-acknowledged.png](docs/wf10-incidents-acknowledged.png) — `acknowledged_at` populated after the button tap.
-
-**Stack**
-
-n8n 2.8.4 (self-hosted) · Supabase Postgres (backing store and application tables) · Groq `openai/gpt-oss-20b` at temperature 0 · Telegram Bot API (dedicated ops bot) · Cloudflare Quick Tunnel · n8n Public API
-
-**Gotchas**
-
-1. **Groq free-tier TPM is a rolling 60-second window.** Twenty classification calls in rapid succession exceed the 8,000 TPM ceiling regardless of Wait interval. Two Wait values (2s, then 4s) failed before the architecture was changed to a single batched call.
-2. **`reasoning_effort: "low"` is required on `gpt-oss-20b`.** Without it, reasoning tokens consume the completion budget and the JSON output truncates mid-array. Symptom: fewer classifications than items, and the tail items show `"unknown"` with reasoning `"no classification returned"`.
-3. **HTTP Request `Using Fields Below` stringifies all values.** Even `={{ true }}` is sent as the string `"true"`. The n8n retry API rejects this with `request/body/loadWorkflow must be boolean`. Fix: use `Using JSON` with `JSON.stringify({...})`.
-4. **Telegram rejects `http://localhost` URLs in inline keyboard buttons.** It returns `Bad Request: inline keyboard button URL ... is invalid: Wrong HTTP URL`. Fix: use the public tunnel URL.
-5. **A stray `=` in the URL field becomes part of the string.** Telegram then reports `Unsupported URL protocol`. The `=` prefix is only meaningful when followed by `{{`. Always verify the evaluated preview below the field before saving.
-6. **n8n's Telegram Trigger node fails to register webhooks on self-hosted 2.8.4.** `getWebhookInfo` returns an empty `url` and `pending_update_count` grows. Fix: replace the Telegram Trigger with a standard Webhook node and register the webhook with Telegram manually via `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<PRODUCTION_URL>`.
-7. **Telegram callback query IDs expire in roughly 10 seconds.** `Answer Query` cannot be tested manually. The query is stale by the time you click Execute step. Only a live button press with the workflow published exercises the node.
-8. **Database migration side effect: imported workflows carried stale credential IDs.** Re-selecting the credential in the node dropdown does not clear the stale reference. Duplicate-and-delete the node to force a fresh credential binding.
-9. **Supabase direct connection is IPv6-only on the free tier.** External clients need the Session Pooler hostname (`aws-0-<region>.pooler.supabase.com`, port 5432). The direct host resolves but times out.
-10. **Supabase certificate is not in n8n's Postgres trust store.** Enable `Ignore SSL Issues` on the credential. `SSLMODE=require` in n8n behaves like `verify-full` and fails with `self-signed certificate in certificate chain`.
-11. **Self-referential monitoring.** Workflow 10 monitors its own failures. Over successive runs, its own output fills the fetch window. Mitigation: raise the `limit` on `Fetch Failed Executions` or filter out the current workflow ID downstream.
-
-**Estimated impact**
-
-For a solo operator running ten n8n workflows, manual monitoring is not feasible. This monitor catches every failure, classifies it with reasoning, retries transient errors automatically, escalates permanent errors to Telegram with one-tap acknowledgement, and preserves a searchable audit trail in `workflow_incidents`. The result: no failure goes unnoticed, and the operator only sees what requires human attention. This is the pattern that agencies bill for as a reliability retainer or managed automation service.
-
-**Roadmap (deferred)**
-
-- `Notify Unknown Incident` for the unknown classification branch.
-- Pagination in `Fetch Failed Executions`.
-- `workflow_name` enrichment via `GET /api/workflows/{id}`.
-- `retry_succeeded` reconciliation pass querying `execution_entity` for the retried execution's final status.
-- Filter Workflow 6's Telegram Trigger on `message.document` to skip non-PDF messages. This is the source of the majority of `permanent_config` failures currently classified.
 
 ---
 
@@ -652,6 +29,9 @@ For a solo operator running ten n8n workflows, manual monitoring is not feasible
 workflows/      # Runtime workflows. Import these into n8n.
 scripts/        # One-off setup utilities. Run once, then discard.
 mcp-server/     # Node.js MCP server exposing n8n workflows as tools.
+docs/
+  workflows/    # One markdown file per workflow (01 to 10).
+  images/       # Screenshots referenced by the workflow docs (wf01-*.png ... wf10-*.png, claude-code-*.png).
 .mcp.json       # Claude Code MCP config. Uses relative path to mcp-server.
 README.md
 package.json
@@ -686,7 +66,7 @@ The `mcp-server/` folder contains its own `package.json` and dependencies. Insta
    - `YOUR_APIFY_TOKEN` — your Apify API token
 5. **Publish** each workflow
 
-Workflow 9 (MCP Integration Server) requires the `summary-digest` workflow to be imported and published. The MCP server's `get_summary` tool calls this workflow's webhook.
+[Workflow 9](docs/workflows/09-mcp-integration-server.md) requires the `summary-digest` workflow to be imported and published. The MCP server's `get_summary` tool calls this workflow's webhook.
 
 ### Sub-workflow import order
 
@@ -705,17 +85,17 @@ Workflows that use sub-workflows:
 
 | Parent workflow | Sub-workflow required |
 |-----------------|----------------------|
-| Customer Support Agent | `escalate-and-notify` |
-| AF Homes Inquiry Intake | `notify-telegram` |
-| AI Log Classifier | `notify-telegram` |
-| AI Lead Qualification Agent | `notify-telegram` |
-| Invoice Processing Pipeline | `notify-telegram` (or direct Telegram Send) |
-| Human-in-the-Loop Approval | none (paired with `approval-callback-handler`) |
+| [Customer Support Agent](docs/workflows/07-customer-support-agent.md) | `escalate-and-notify` |
+| [AF Homes Inquiry Intake](docs/workflows/04-af-homes-inquiry-intake.md) | `notify-telegram` |
+| [AI Log Classifier](docs/workflows/02-ai-log-classifier.md) | `notify-telegram` |
+| [AI Lead Qualification Agent](docs/workflows/05-ai-lead-qualification-agent.md) | `notify-telegram` |
+| [Invoice Processing Pipeline](docs/workflows/06-invoice-processing-pipeline.md) | `notify-telegram` (or direct Telegram Send) |
+| [Human-in-the-Loop Approval](docs/workflows/08-human-in-the-loop-approval.md) | none (paired with `approval-callback-handler`) |
 | Approval Callback Handler | none (companion to `human-in-the-loop-approval`) |
-| Workflow Health Monitor | none (top-level; monitors all other workflows) |
+| [Workflow Health Monitor](docs/workflows/10-workflow-health-monitor.md) | none (top-level; monitors all other workflows) |
 | Workflow Incident Callback Handler | none (companion to `workflow-health-monitor`) |
-| GitHub Good First Issue Notifier | none |
-| Error Handler | none |
+| [GitHub Good First Issue Notifier](docs/workflows/01-github-notifier.md) | none |
+| [Error Handler](docs/workflows/03-error-handler.md) | none |
 
 Workflows 8 and 10 each use a two-workflow pattern rather than a sub-workflow. Workflow 8 requires `human-in-the-loop-approval.json` and `approval-callback-handler.json`. Workflow 10 requires `workflow-health-monitor.json` and `workflow-incident-callback-handler.json`. Callback handler workflows must be published before testing their parent workflow, or button clicks will not fire.
 
@@ -871,6 +251,8 @@ ALTER TABLE vendors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ```
 
+Workflows 7, 8, and 10 also use `orders`, `shipping`, `escalations`, `draft_approvals`, and `workflow_incidents` tables, plus the auto-created `n8n_chat_histories` table.
+
 ### Seeding the databases
 
 Two one-off seed scripts live in `scripts/`. Both run outside n8n because they need filesystem access and execute once per corpus update, not per workflow execution.
@@ -879,10 +261,10 @@ Two one-off seed scripts live in `scripts/`. Both run outside n8n because they n
 # From repo root
 npm install
 
-# Seed FAQ vector store (Project 4)
+# Seed FAQ vector store (Workflow 4)
 node scripts/seed-faq.js
 
-# Seed vendor reference table (Project 6)
+# Seed vendor reference table (Workflow 6)
 # Run scripts/seed-vendors.sql in the Supabase SQL Editor
 ```
 
@@ -970,6 +352,8 @@ SELECT id, vendor_name, status, status_reasons FROM invoices ORDER BY created_at
 
 ## Gotchas Encountered
 
+Portfolio-wide gotchas. Workflow-specific gotchas live in each [workflow file](docs/workflows/).
+
 **n8n 2.x:**
 - Renamed "Trigger Times" to "Trigger Interval" and moved timezone from Personal Settings to per-workflow settings.
 - Error workflows must be published to appear in another workflow's Error Workflow dropdown.
@@ -1031,6 +415,7 @@ SELECT id, vendor_name, status, status_reasons FROM invoices ORDER BY created_at
 - [ ] **MCP Integration Server — Additional tools:** Expose more n8n workflows. Candidates: `list_open_issues` (GitHub Notifier), `get_invoice` (query the invoices table by ID), `recent_errors` (query error_logs by severity).
 - [ ] **MCP Integration Server — VPS deployment:** Move the server and n8n to a VPS with a stable public URL. Removes the tunnel dependency and makes the MCP server reachable from remote Claude Code sessions.
 - [ ] **MCP Integration Server — HTTP transport:** Add HTTP Streamable transport as an alternative to stdio. Enables remote clients to connect without spawning a local process.
+- [ ] **Workflow Health Monitor:** see the [deferred list](docs/workflows/10-workflow-health-monitor.md#roadmap-deferred).
 - [ ] **Future workflows (planned):** Multi-System Lead Orchestration (HubSpot + Airtable + Google Calendar, triggered from the AI Lead Qualification Agent) and an Ops Dashboard (cross-workflow aggregation and reporting).
 
 ## About

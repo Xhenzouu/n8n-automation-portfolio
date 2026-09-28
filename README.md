@@ -90,8 +90,8 @@ Workflows that use sub-workflows:
 | [AI Log Classifier](docs/workflows/02-ai-log-classifier.md) | `notify-telegram` |
 | [AI Lead Qualification Agent](docs/workflows/05-ai-lead-qualification-agent.md) | `notify-telegram` |
 | [Invoice Processing Pipeline](docs/workflows/06-invoice-processing-pipeline.md) | `notify-telegram` (or direct Telegram Send) |
-| [Human-in-the-Loop Approval](docs/workflows/08-human-in-the-loop-approval.md) | none (paired with `approval-callback-handler`) |
-| Approval Callback Handler | none (companion to `human-in-the-loop-approval`) |
+| [Human-in-the-Loop Approval](docs/workflows/08-human-in-the-loop-approval.md) | none (paired with [Approval Callback Handler](docs/workflows/08b-approval-callback-handler.md)) |
+| [Approval Callback Handler](docs/workflows/08b-approval-callback-handler.md) | none (companion to `human-in-the-loop-approval`) |
 | [Workflow Health Monitor](docs/workflows/10-workflow-health-monitor.md) | none (top-level; monitors all other workflows) |
 | Workflow Incident Callback Handler | none (companion to `workflow-health-monitor`) |
 | [GitHub Good First Issue Notifier](docs/workflows/01-github-notifier.md) | none |

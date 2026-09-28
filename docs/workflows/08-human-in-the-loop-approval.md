@@ -3,6 +3,7 @@
 [← Back to README](../../README.md)
 
 **Status:** v1.0.0 published. Edit loop, publish endpoint, and separate-bot isolation deferred to [Roadmap](../../README.md#roadmap).
+**Companion workflow:** [Approval Callback Handler](./08b-approval-callback-handler.md)
 
 ## Problem
 

@@ -1,0 +1,131 @@
+{
+  "name": "Workflow Incident Callback Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-callback",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "74cbcb43-b402-43d4-b06a-ecffe2ba5313",
+      "name": "Telegram Callback Webhook",
+      "webhookId": "5cea41ab-f5ab-43a2-81eb-c5d50cad571a"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const body = item.json.body || {};\n  const cbq = body.callback_query;\n  \n  // Case 1: not a callback query (e.g. text message). No-op.\n  if (!cbq) {\n    results.push({\n      json: {\n        action: \"noop\",\n        incident_id: null,\n        callback_query_id: null\n      }\n    });\n    continue;\n  }\n  \n  const data = cbq.data || \"\";\n  const callbackQueryId = cbq.id || null;\n  \n  // Parse \"ack:<id>\" format\n  if (data.startsWith(\"ack:\")) {\n    const rawId = data.slice(4);\n    const incidentId = parseInt(rawId, 10);\n    \n    results.push({\n      json: {\n        action: \"ack\",\n        incident_id: isNaN(incidentId) ? null : incidentId,\n        callback_query_id: callbackQueryId\n      }\n    });\n    continue;\n  }\n  \n  // Unknown callback prefix\n  results.push({\n    json: {\n      action: \"unknown\",\n      incident_id: null,\n      callback_query_id: callbackQueryId\n    }\n  });\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "c82a5a2d-db1c-40e7-b70b-f1ea6d0f5ed1",
+      "name": "Parse Ack Callback"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE workflow_incidents\nSET acknowledged_at = NOW()\nWHERE id = {{ $json.incident_id }}\n  AND acknowledged_at IS NULL\n  AND {{ $json.action === 'ack' }};",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        416,
+        0
+      ],
+      "id": "9c73e559-a21e-43b0-a49d-a94b72dcd637",
+      "name": "Mark Incident Acknowledged",
+      "credentials": {
+        "postgres": {
+          "id": "xKMPq6XkTuqu2A9i",
+          "name": "Supabase Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "callback",
+        "queryId": "={{ $('Parse Ack Callback').item.json.callback_query_id }}",
+        "additionalFields": {
+          "cache_time": 0,
+          "show_alert": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        624,
+        0
+      ],
+      "id": "cbdcf269-00d3-4188-8a10-146d43295d01",
+      "name": "Answer Callback",
+      "webhookId": "01bd164c-411d-4a3d-aa3e-8dd787bee854",
+      "credentials": {
+        "telegramApi": {
+          "id": "EQksz27XCsPvK1cm",
+          "name": "Telegram Ops Bot"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Callback Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Ack Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Ack Callback": {
+      "main": [
+        [
+          {
+            "node": "Mark Incident Acknowledged",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Incident Acknowledged": {
+      "main": [
+        [
+          {
+            "node": "Answer Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "14b40f8e-c846-43d3-95e2-fe93513484be",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "daae1a4cfdc8cedef8e4c0a51dea5436df6634717b0af4368ce8236758877cd8"
+  },
+  "id": "wr5ZHY9arH7GrYJR",
+  "tags": []
+}

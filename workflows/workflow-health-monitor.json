@@ -1,0 +1,693 @@
+﻿{
+  "name": "Workflow Health Monitor",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "10d05744-f911-4efa-8b1c-779c6152a5eb",
+      "name": "When clicking â€˜Execute workflowâ€™"
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5678/api/v1/executions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "error"
+            },
+            {
+              "name": "limit",
+              "value": "20"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        208,
+        0
+      ],
+      "id": "77c87ae8-df6f-42b9-9962-6989fc561269",
+      "name": "HTTP Request",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QKP9Jv9fNdSvQzHt",
+          "name": "n8n API Header"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "data",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        416,
+        0
+      ],
+      "id": "11434dbe-6169-49b9-baf7-93c1e9498327",
+      "name": "Split Executions"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "JSON",
+        "body": "={{ $json.body_string }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1664,
+        0
+      ],
+      "id": "ccdbf1d8-69d8-48c8-b238-69018e0b49a9",
+      "name": "Classify Failure",
+      "credentials": {
+        "groqApi": {
+          "id": "dvfXTXMRxMuu4mjP",
+          "name": "Groq API"
+        },
+        "httpHeaderAuth": {
+          "id": "QKP9Jv9fNdSvQzHt",
+          "name": "n8n API Header"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=http://localhost:5678/api/v1/executions/{{ $json.id }}?includeData=true",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        832,
+        0
+      ],
+      "id": "ca23d378-ab90-41ad-9ee8-4473e25c1138",
+      "name": "Fetch Execution Detail",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "maxTries": 5,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QKP9Jv9fNdSvQzHt",
+          "name": "n8n API Header"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const executions = item.json.executions || [];\n  \n  // Build numbered list of errors\n  const numberedLines = [];\n  for (let i = 0; i < executions.length; i++) {\n    const e = executions[i];\n    const execId = e.execution_id || \"unknown\";\n    const failedNode = e.failed_node || \"unknown\";\n    const errName = e.error_name || \"unknown\";\n    const errMsg = (e.error_message || \"no message\").replace(/\\s+/g, \" \").trim();\n    numberedLines.push(\n      (i + 1) + \". Execution \" + execId + \": \" + errName + \" at \" + failedNode + \". Message: \" + errMsg\n    );\n  }\n  \n  const systemLines = [\n    \"You are a workflow failure classifier. You will receive a numbered list of n8n execution errors. For each error, return exactly one classification from this fixed list:\",\n    \"\",\n    \"- transient_network: connection reset, DNS failure, timeout, ECONNREFUSED, ETIMEDOUT\",\n    \"- transient_rate_limit: 429, rate limit exceeded, quota exceeded, too many requests\",\n    \"- permanent_auth: 401, 403, invalid credentials, authentication failed\",\n    \"- permanent_schema: column does not exist, null value violates constraint, invalid input syntax, JSON parse error\",\n    \"- permanent_config: missing credential, node not configured, workflow not active, node not executed\",\n    \"- unknown: none of the above\",\n    \"\",\n    \"Return JSON only, no markdown, no prose. The JSON must contain a single key 'classifications' whose value is an array with exactly one object per input error, in the same order as the input. Each object must have these exact keys: index (zero-based integer matching the input position), classification (one of the six values above), confidence (number between 0 and 1), reasoning (one short sentence).\"\n  ];\n  const systemPrompt = systemLines.join(\"\\n\");\n  \n  const userLines = [\n    \"Classify each of the following \" + executions.length + \" errors. Return exactly \" + executions.length + \" classifications in the same order.\",\n    \"\",\n    numberedLines.join(\"\\n\")\n  ];\n  const userPrompt = userLines.join(\"\\n\");\n  \n  const body = {\n    model: \"openai/gpt-oss-20b\",\n    temperature: 0,\n    reasoning_effort: \"low\",\n    response_format: { type: \"json_object\" },\n    messages: [\n      { role: \"system\", content: systemPrompt },\n      { role: \"user\", content: userPrompt }\n    ]\n  };\n  \n  results.push({\n    json: {\n      body_string: JSON.stringify(body)\n    }\n  });\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1456,
+        0
+      ],
+      "id": "4adb3da2-bd7f-4020-83a7-cb69b650834c",
+      "name": "Build Classify Body"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const d = item.json;\n  const errorObj = d.data?.resultData?.error || {};\n  results.push({\n    json: {\n      execution_id: d.id,\n      workflow_id: d.workflowId,\n      status: d.status,\n      error_message: errorObj.message || null,\n      error_name: errorObj.name || null,\n      failed_node: d.data?.resultData?.lastNodeExecuted || null\n    }\n  });\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        0
+      ],
+      "id": "53e574af-4f72-4587-b73f-584493589069",
+      "name": "Extract Incident Fields"
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "executions",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        1248,
+        0
+      ],
+      "id": "4aa20687-bfd1-4d0e-8022-b3fa8d3d4170",
+      "name": "Aggregate Executions"
+    },
+    {
+      "parameters": {
+        "jsCode": "const groqItem = $input.first().json;\nconst executions = $('Aggregate Executions').first().json.executions || [];\n\n// Parse the Groq content string\nlet classifications = [];\nlet parseError = null;\ntry {\n  const content = groqItem.choices[0].message.content;\n  const parsed = JSON.parse(content);\n  classifications = Array.isArray(parsed.classifications) ? parsed.classifications : [];\n} catch (e) {\n  parseError = e.message;\n}\n\nconst results = [];\n\nfor (let i = 0; i < executions.length; i++) {\n  const exec = executions[i];\n  const cls = classifications[i] || null;\n  \n  results.push({\n    json: {\n      execution_id: exec.execution_id || null,\n      workflow_id: exec.workflow_id || null,\n      status: exec.status || null,\n      error_message: exec.error_message || null,\n      error_name: exec.error_name || null,\n      failed_node: exec.failed_node || null,\n      classification: cls && cls.classification ? cls.classification : \"unknown\",\n      classification_confidence: cls && typeof cls.confidence === \"number\" ? cls.confidence : null,\n      classification_reasoning: cls && cls.reasoning ? cls.reasoning : (parseError || \"no classification returned\")\n    }\n  });\n}\n\n// If Groq returned more classifications than executions, emit the extras with null execution fields\nif (classifications.length > executions.length) {\n  for (let i = executions.length; i < classifications.length; i++) {\n    const cls = classifications[i];\n    results.push({\n      json: {\n        execution_id: null,\n        workflow_id: null,\n        status: null,\n        error_message: null,\n        error_name: null,\n        failed_node: null,\n        classification: cls.classification || \"unknown\",\n        classification_confidence: typeof cls.confidence === \"number\" ? cls.confidence : null,\n        classification_reasoning: cls.reasoning || \"orphan classification with no matching execution\"\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1872,
+        0
+      ],
+      "id": "7ab3b0bd-d930-4da4-a70c-247377bbd69b",
+      "name": "Parse Classifications"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "1a30bceb-c4d0-40e3-8d53-7a98d3811c19",
+              "leftValue": "={{ $json.classification }}",
+              "rightValue": "transient_network",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            },
+            {
+              "id": "537fb192-d80d-4813-ba66-2392245fe5d4",
+              "leftValue": "={{ $json.classification }}",
+              "rightValue": "transient_rate_limit",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2080,
+        -144
+      ],
+      "id": "4e2054d6-61b4-4aae-8acc-ae39a018a007",
+      "name": "If Transient"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "68fbd536-4c3c-43aa-9db1-f41bf852216d",
+              "leftValue": "={{ $json.classification }}",
+              "rightValue": "permanent_auth",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            },
+            {
+              "id": "5d167608-313f-47fe-b3ea-4574e669d6ab",
+              "leftValue": "={{ $json.classification }}",
+              "rightValue": "permanent_schema",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            },
+            {
+              "id": "9a4cd9be-78a8-4b0d-a1f9-f233c017948a",
+              "leftValue": "={{ $json.classification }}",
+              "rightValue": "permanent_config",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2080,
+        0
+      ],
+      "id": "296bee53-fcd5-48bd-953d-6c352c77bca8",
+      "name": "If Permanent"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "4962327a-dc40-49a9-830a-91335e497b46",
+              "leftValue": "={{ $json.classification }}",
+              "rightValue": "unknown",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2080,
+        160
+      ],
+      "id": "38f356f6-be50-4e54-b898-23769cb1a6d4",
+      "name": "If Unknown"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO workflow_incidents (\n  execution_id,\n  workflow_id,\n  workflow_name,\n  failed_node,\n  error_message,\n  error_type,\n  classification,\n  classification_confidence,\n  retry_attempted,\n  retry_count,\n  escalated\n) VALUES (\n  '{{ $json.execution_id.replace(/'/g, \"''\") }}',\n  '{{ $json.workflow_id.replace(/'/g, \"''\") }}',\n  '{{ $json.workflow_id.replace(/'/g, \"''\") }}',\n  '{{ ($json.failed_node || '').replace(/'/g, \"''\") }}',\n  '{{ ($json.error_message || '').replace(/'/g, \"''\") }}',\n  '{{ ($json.error_name || '').replace(/'/g, \"''\") }}',\n  '{{ $json.classification.replace(/'/g, \"''\") }}',\n  {{ Number($json.classification_confidence) }},\n  false,\n  0,\n  false\n)\nON CONFLICT (execution_id, classification)\nDO UPDATE SET retry_attempted = workflow_incidents.retry_attempted;\nRETURNING id;",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2304,
+        -160
+      ],
+      "id": "526ae6d7-701c-4a09-a7db-bcf128fd2904",
+      "name": "Insert Transient Incident",
+      "credentials": {
+        "postgres": {
+          "id": "xKMPq6XkTuqu2A9i",
+          "name": "Supabase Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO workflow_incidents (\n  execution_id,\n  workflow_id,\n  workflow_name,\n  failed_node,\n  error_message,\n  error_type,\n  classification,\n  classification_confidence,\n  retry_attempted,\n  retry_count,\n  escalated\n) VALUES (\n  '{{ $json.execution_id.replace(/'/g, \"''\") }}',\n  '{{ $json.workflow_id.replace(/'/g, \"''\") }}',\n  '{{ $json.workflow_id.replace(/'/g, \"''\") }}',\n  '{{ ($json.failed_node || '').replace(/'/g, \"''\") }}',\n  '{{ ($json.error_message || '').replace(/'/g, \"''\") }}',\n  '{{ ($json.error_name || '').replace(/'/g, \"''\") }}',\n  '{{ $json.classification.replace(/'/g, \"''\") }}',\n  {{ Number($json.classification_confidence) }},\n  false,\n  0,\n  false\n)\nON CONFLICT (execution_id, classification)\nDO UPDATE SET retry_attempted = workflow_incidents.retry_attempted\nRETURNING id;",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2304,
+        0
+      ],
+      "id": "5085c4d1-f5dc-4214-b263-9b82cc3d80f3",
+      "name": "Insert Permanent Incident",
+      "credentials": {
+        "postgres": {
+          "id": "xKMPq6XkTuqu2A9i",
+          "name": "Supabase Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO workflow_incidents (\n  execution_id,\n  workflow_id,\n  workflow_name,\n  failed_node,\n  error_message,\n  error_type,\n  classification,\n  classification_confidence,\n  retry_attempted,\n  retry_count,\n  escalated\n) VALUES (\n  '{{ $json.execution_id.replace(/'/g, \"''\") }}',\n  '{{ $json.workflow_id.replace(/'/g, \"''\") }}',\n  '{{ $json.workflow_id.replace(/'/g, \"''\") }}',\n  '{{ ($json.failed_node || '').replace(/'/g, \"''\") }}',\n  '{{ ($json.error_message || '').replace(/'/g, \"''\") }}',\n  '{{ ($json.error_name || '').replace(/'/g, \"''\") }}',\n  '{{ $json.classification.replace(/'/g, \"''\") }}',\n  {{ Number($json.classification_confidence) }},\n  false,\n  0,\n  false\n)\nON CONFLICT (execution_id, classification)\nDO UPDATE SET retry_attempted = workflow_incidents.retry_attempted;\nRETURNING id;",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2304,
+        176
+      ],
+      "id": "6110a102-6871-491b-8187-c61caf6046cc",
+      "name": "Insert Unknown Incident",
+      "credentials": {
+        "postgres": {
+          "id": "xKMPq6XkTuqu2A9i",
+          "name": "Supabase Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://localhost:5678/api/v1/executions/{{ $('Parse Classifications').item.json.execution_id }}/retry",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ loadWorkflow: true }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2512,
+        -160
+      ],
+      "id": "7f6884b4-0dfe-497d-82a8-8bd24d0ad6bc",
+      "name": "Retry Failed Execution",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QKP9Jv9fNdSvQzHt",
+          "name": "n8n API Header"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 0.5
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        624,
+        0
+      ],
+      "id": "d2cb342f-9833-488c-b86e-7f440c0a9ec8",
+      "name": "Throttle Detail Fetches",
+      "webhookId": "412a19a1-bfce-460c-bb5b-743dc0d6213b"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE workflow_incidents\nSET\n  retry_attempted = true,\n  retry_count = retry_count + 1,\n  retry_succeeded = {{ $json.status === 'success' }}\nWHERE execution_id = '{{ $json.retryOf }}'\n  AND classification IN ('transient_network', 'transient_rate_limit');",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2720,
+        -160
+      ],
+      "id": "bd78fef0-d842-4313-a065-5cfaf80189b4",
+      "name": "Update Retry Outcome",
+      "credentials": {
+        "postgres": {
+          "id": "xKMPq6XkTuqu2A9i",
+          "name": "Supabase Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ \"ðŸš¨ <b>Permanent Failure Detected</b>\\n\\n\" +\"<b>Execution:</b> \" + $('If Permanent').item.json.execution_id + \"\\n\" +\"<b>Workflow:</b> \" + $('If Permanent').item.json.workflow_id + \"\\n\" +\"<b>Failed Node:</b> \" + ($('If Permanent').item.json.failed_node || \"unknown\") + \"\\n\" +\"<b>Error Type:</b> \" + ($('If Permanent').item.json.error_name || \"unknown\") + \"\\n\" +\"<b>Classification:</b> \" + $('If Permanent').item.json.classification + \"\\n\" +\"<b>Confidence:</b> \" + $('If Permanent').item.json.classification_confidence + \"\\n\\n\" +\"<b>Message:</b>\\n\" + ($('If Permanent').item.json.error_message || \"no message\").slice(0, 200) }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Acknowledge",
+                    "additionalFields": {
+                      "callback_data": "={{ \"ack:\" + $('Insert Permanent Incident').item.json.id }}"
+                    }
+                  },
+                  {
+                    "text": "Investigate",
+                    "additionalFields": {
+                      "url": "={{ \"https://YOUR_PUBLIC_URL/workflow/\" + $('If Permanent').item.json.workflow_id + \"/executions/\" + $('If Permanent').item.json.execution_id }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2512,
+        0
+      ],
+      "id": "182d842c-5758-489c-aed7-2e2f6b5d679f",
+      "name": "Notify Permanent Incident",
+      "webhookId": "252f65c4-ae43-483f-94f0-e69f7ee840b5",
+      "credentials": {
+        "telegramApi": {
+          "id": "EQksz27XCsPvK1cm",
+          "name": "Telegram Ops Bot"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking â€˜Execute workflowâ€™": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Split Executions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Executions": {
+      "main": [
+        [
+          {
+            "node": "Throttle Detail Fetches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Execution Detail": {
+      "main": [
+        [
+          {
+            "node": "Extract Incident Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Classify Body": {
+      "main": [
+        [
+          {
+            "node": "Classify Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Incident Fields": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Executions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Executions": {
+      "main": [
+        [
+          {
+            "node": "Build Classify Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Failure": {
+      "main": [
+        [
+          {
+            "node": "Parse Classifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Classifications": {
+      "main": [
+        [
+          {
+            "node": "If Permanent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "If Unknown",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "If Transient",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Transient": {
+      "main": [
+        [
+          {
+            "node": "Insert Transient Incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Permanent": {
+      "main": [
+        [
+          {
+            "node": "Insert Permanent Incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Unknown": {
+      "main": [
+        [
+          {
+            "node": "Insert Unknown Incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Transient Incident": {
+      "main": [
+        [
+          {
+            "node": "Retry Failed Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Permanent Incident": {
+      "main": [
+        [
+          {
+            "node": "Notify Permanent Incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Unknown Incident": {
+      "main": [
+        []
+      ]
+    },
+    "Retry Failed Execution": {
+      "main": [
+        [
+          {
+            "node": "Update Retry Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Throttle Detail Fetches": {
+      "main": [
+        [
+          {
+            "node": "Fetch Execution Detail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "344c6845-a0a6-4d87-9a58-0e8116ca93fc",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "daae1a4cfdc8cedef8e4c0a51dea5436df6634717b0af4368ce8236758877cd8"
+  },
+  "id": "JzRPJMZ77g2khEBN",
+  "tags": []
+}

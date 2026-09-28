@@ -4,7 +4,7 @@ Production-ready automation workflows built with self-hosted n8n. Integrates Git
 
 ## Quick Tour
 
-Nine production-quality workflows. Each teaches a distinct architecture pattern. Full details below.
+Ten production-quality workflows. Each teaches a distinct architecture pattern. Full details below.
 
 | # | Workflow | Pattern |
 |---|----------|---------|
@@ -17,6 +17,7 @@ Nine production-quality workflows. Each teaches a distinct architecture pattern.
 | 7 | Customer Support Agent | Conversational AI agent with tool calling and persistent memory |
 | 8 | Human-in-the-Loop Approval | AI refinement + Telegram inline keyboard approval |
 | 9 | MCP Integration Server | n8n workflows exposed as tools for Claude Code |
+| 10 | Workflow Health Monitor | Cross-workflow failure classification + retry + Telegram escalation |
 
 **Stack:** n8n (self-hosted) · Groq · Google Gemini · Apify · Supabase (PostgreSQL + pgvector) · Telegram · Gmail · GitHub REST API
 
@@ -52,6 +53,8 @@ Schedule Trigger (weekday 9AM)
 
 **Estimated impact:** ~5 minutes saved per manual check × ~22 weekdays = **~110 minutes/month saved**.
 
+**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
+
 ---
 
 ### 2. AI Log Classifier (Groq + Supabase + Telegram)
@@ -85,6 +88,8 @@ Webhook (POST /log-classifier)
 
 **Estimated impact:** Replaces manual log review. Critical alerts surface in seconds instead of during the next check.
 
+**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
+
 ---
 
 ### 3. Error Handler (Supporting Workflow)
@@ -105,6 +110,8 @@ Error Trigger (fires on linked workflow failure)
 **Why it matters:** Silent automation failures are worse than no automation.
 
 **Estimated impact:** Catches silent failures within minutes instead of hours.
+
+**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
 
 ---
 
@@ -154,6 +161,8 @@ Every specific number was sourced from the retrieved FAQ chunks — none invente
 **Stack:** n8n (self-hosted) · Groq API (`openai/gpt-oss-20b`) · Google Gemini (`gemini-embedding-001`) · Supabase (PostgreSQL + pgvector) · Telegram Bot API
 
 **Estimated impact:** Replaces manual inquiry triage. Grounded draft replies reduce first-response time from minutes of drafting to seconds of review.
+
+**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
 
 ---
 
@@ -228,6 +237,8 @@ The `Company Maturity` criterion fires only when enrichment supports it. When en
 - **Empty LLM responses happen.** Guard against them explicitly. A lead with a failed classification is still a lead — log it with a failure marker rather than dropping it.
 - **n8n's Header Auth credential: the "Name" field is the HTTP header key, not a display label.** Setting `Name: Apify API` produces `ERR_INVALID_HTTP_TOKEN` because spaces aren't valid in HTTP header names. Use `Name: Authorization`, `Value: Bearer <token>`. The credential's human-readable label is set separately when you name the credential during save.
 
+**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
+
 ---
 
 ### 6. Invoice Processing Pipeline (Groq + Supabase + Telegram)
@@ -294,6 +305,8 @@ Supabase `invoices` table contains one row per status after cleanup, confirming 
 - **Telegram Trigger uses webhooks, which require a publicly reachable HTTPS URL in production.** Test mode uses n8n's tunnel; production requires a VPS, Cloudflare Tunnel, or a similar stable ingress. The n8n `--tunnel` flag is deprecated and non-functional in v2.
 - **The `Always Output Data` setting is required on Postgres nodes whose SELECT may return zero rows.** Without it, an empty result terminates the workflow before downstream branches can handle the "not found" case.
 - **Groq's `response_format: json_object` mode does not accept a JSON Schema.** The schema must be communicated via the prompt. Unlike OpenAI's Structured Outputs, Groq validates only that output is valid JSON, not that it matches a specific shape.
+
+**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
 
 ---
 
@@ -365,6 +378,8 @@ All four tests verify: correct tool selection, correct parameter extraction via 
 - **LLM date reformatting can shift dates by one day.** Even with the system prompt instructing "use ISO format exactly as returned by tools," the model rendered `2026-09-15` as `2026-09-14` in one test. Root cause is likely timezone conversion during the model's date parsing. Cosmetic issue, not a data corruption issue.
 - **Sub-workflow trigger nodes need explicit input fields defined.** Clicking "Execute step" on the trigger without providing inputs produces `undefined` values in downstream nodes. Test the sub-workflow from the parent workflow, not in isolation, unless you manually provide all input values.
 
+**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
+
 ---
 
 ### 8. Human-in-the-Loop Approval (Groq + Supabase + Telegram Inline Keyboard)
@@ -389,7 +404,7 @@ Webhook (POST /draft-approval)
 ```
 
 ```
-Callback handler workflow (approval-callback-handler.json, published):
+Callback handler workflow (workflow-incident-callback-handler.json, published):
 Telegram Trigger (Callback Query)
 → Acknowledge Click (Telegram Answer Query)
 → Log Decision (Postgres UPDATE draft_approvals)
@@ -434,6 +449,8 @@ Telegram Trigger (Callback Query)
 - Edit loop (when `decision = 'edit'`, re-run the refinement with the human's edit notes)
 - Publish path (when `decision = 'approve'`, POST the refined draft to a real publishing endpoint)
 - Separate Telegram bots per workflow to eliminate webhook conflicts
+
+**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
 
 ---
 
@@ -560,6 +577,73 @@ Both tool calls verified end-to-end: natural-language prompt, MCP tool selection
 - **Relative paths in `.mcp.json` require Claude Code to spawn from the repo root.** If you run `claude` from a subdirectory, the relative path breaks. Documented behavior: always `cd` to the repo root before starting Claude Code.
 - **Absolute paths in `.mcp.json` work but don't travel with the repo.** A reviewer cloning the repo would need to edit the file. The relative path avoids this. Both are valid; relative is preferred for portability.
 
+**Monitored by:** [Project 10: Workflow Health Monitor](#10-workflow-health-monitor)
+
+---
+
+### 10. Workflow Health Monitor
+
+**Status:** Shipped
+
+**Problem statement**
+
+Automations break silently. A failed n8n workflow leaves an execution row in the database, but nobody is notified unless an operator opens the Executions tab. Across the job postings I scraped for Automation Specialist and AI Operations roles, reliability and error handling appeared in every single one. This project demonstrates cross-workflow health monitoring end to end: detection, classification, retry, escalation, and human acknowledgement.
+
+**Architecture**
+
+A scheduled trigger pulls recent failed executions from the n8n Public API. Each execution's full payload is fetched individually, then stripped to six fields to keep memory flat. The slimmed items are aggregated into one batch and sent to Groq in a single classification call. The classifier returns a JSON array with one classification per item, following a six-class taxonomy with temperature 0. A Switch routes the classified items into three branches: transient, permanent, unknown. Each branch writes to `workflow_incidents`. The transient branch also retries the failed execution via the n8n retry endpoint and writes the outcome back to the incident row. The permanent branch sends a Telegram escalation with two inline buttons: `Acknowledge` and `Investigate`.
+
+A second workflow, `Workflow Incident Callback Handler`, receives the button press, marks the incident acknowledged in the database, and dismisses the Telegram loading spinner.
+
+**Key implementation details**
+
+- **Batched classification.** All failures classified in one Groq call instead of N calls. The free-tier TPM ceiling (8,000 tokens per rolling 60 seconds) makes per-item classification unworkable at any Wait interval; batching sidesteps it. Effective cost: roughly 2,700 tokens per 20-item batch.
+- **Six-class taxonomy.** `transient_network`, `transient_rate_limit`, `permanent_auth`, `permanent_schema`, `permanent_config`, `unknown`. Temperature 0 for deterministic output. `reasoning_effort: low` on `gpt-oss-20b` to keep reasoning tokens from consuming the JSON response budget.
+- **Idempotent writes.** `workflow_incidents` carries a unique constraint on `(execution_id, classification)`. The insert uses `ON CONFLICT ... DO UPDATE SET retry_attempted = workflow_incidents.retry_attempted` to self-touch. Re-runs do not duplicate, do not error, and keep the downstream retry chain alive.
+- **Retry policy.** One attempt per incident. Transient items are retried via `POST /api/v1/executions/{id}/retry`. Outcome written to `retry_attempted`, `retry_count`, `retry_succeeded`. `Retry Failed Execution` uses `Using JSON` with `JSON.stringify({ loadWorkflow: true })` because n8n's `Using Fields Below` mode stringifies booleans.
+- **Human-in-the-loop.** Telegram inline keyboard. `Acknowledge` sends a callback query to the handler workflow and writes `acknowledged_at`. `Investigate` is a URL button that opens the failing execution in the browser.
+- **Memory discipline.** The n8n executions API with `includeData=true` returns roughly 600 KB per execution. An `Extract Incident Fields` Code node strips to six fields before aggregating, reducing the working set from ~12 MB to ~4 KB per run.
+
+**Verified behavior**
+
+- [wf10-canvas.png](docs/wf10-canvas.png) — full workflow canvas, all nodes green after an end-to-end run.
+- [wf10-classify-failure.png](docs/wf10-classify-failure.png) — single Groq call returning 20 classifications with confidence and reasoning per item.
+- [wf10-incidents-mixed.png](docs/wf10-incidents-mixed.png) — `workflow_incidents` rows showing mixed classifications and confidence scores.
+- [wf10-incidents-distribution.png](docs/wf10-incidents-distribution.png) — classification counts across the taxonomy.
+- [wf10-telegram-escalation.png](docs/wf10-telegram-escalation.png) — Telegram escalation with Acknowledge and Investigate buttons.
+- [wf10-callback-handler.png](docs/wf10-callback-handler.png) — Workflow Incident Callback Handler execution, all four nodes green.
+- [wf10-incidents-acknowledged.png](docs/wf10-incidents-acknowledged.png) — `acknowledged_at` populated after the button tap.
+
+**Stack**
+
+n8n 2.8.4 (self-hosted) · Supabase Postgres (backing store and application tables) · Groq `openai/gpt-oss-20b` at temperature 0 · Telegram Bot API (dedicated ops bot) · Cloudflare Quick Tunnel · n8n Public API
+
+**Gotchas**
+
+1. **Groq free-tier TPM is a rolling 60-second window.** Twenty classification calls in rapid succession exceed the 8,000 TPM ceiling regardless of Wait interval. Two Wait values (2s, then 4s) failed before the architecture was changed to a single batched call.
+2. **`reasoning_effort: "low"` is required on `gpt-oss-20b`.** Without it, reasoning tokens consume the completion budget and the JSON output truncates mid-array. Symptom: fewer classifications than items, and the tail items show `"unknown"` with reasoning `"no classification returned"`.
+3. **HTTP Request `Using Fields Below` stringifies all values.** Even `={{ true }}` is sent as the string `"true"`. The n8n retry API rejects this with `request/body/loadWorkflow must be boolean`. Fix: use `Using JSON` with `JSON.stringify({...})`.
+4. **Telegram rejects `http://localhost` URLs in inline keyboard buttons.** It returns `Bad Request: inline keyboard button URL ... is invalid: Wrong HTTP URL`. Fix: use the public tunnel URL.
+5. **A stray `=` in the URL field becomes part of the string.** Telegram then reports `Unsupported URL protocol`. The `=` prefix is only meaningful when followed by `{{`. Always verify the evaluated preview below the field before saving.
+6. **n8n's Telegram Trigger node fails to register webhooks on self-hosted 2.8.4.** `getWebhookInfo` returns an empty `url` and `pending_update_count` grows. Fix: replace the Telegram Trigger with a standard Webhook node and register the webhook with Telegram manually via `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<PRODUCTION_URL>`.
+7. **Telegram callback query IDs expire in roughly 10 seconds.** `Answer Query` cannot be tested manually. The query is stale by the time you click Execute step. Only a live button press with the workflow published exercises the node.
+8. **Database migration side effect: imported workflows carried stale credential IDs.** Re-selecting the credential in the node dropdown does not clear the stale reference. Duplicate-and-delete the node to force a fresh credential binding.
+9. **Supabase direct connection is IPv6-only on the free tier.** External clients need the Session Pooler hostname (`aws-0-<region>.pooler.supabase.com`, port 5432). The direct host resolves but times out.
+10. **Supabase certificate is not in n8n's Postgres trust store.** Enable `Ignore SSL Issues` on the credential. `SSLMODE=require` in n8n behaves like `verify-full` and fails with `self-signed certificate in certificate chain`.
+11. **Self-referential monitoring.** Workflow 10 monitors its own failures. Over successive runs, its own output fills the fetch window. Mitigation: raise the `limit` on `Fetch Failed Executions` or filter out the current workflow ID downstream.
+
+**Estimated impact**
+
+For a solo operator running ten n8n workflows, manual monitoring is not feasible. This monitor catches every failure, classifies it with reasoning, retries transient errors automatically, escalates permanent errors to Telegram with one-tap acknowledgement, and preserves a searchable audit trail in `workflow_incidents`. The result: no failure goes unnoticed, and the operator only sees what requires human attention. This is the pattern that agencies bill for as a reliability retainer or managed automation service.
+
+**Roadmap (deferred)**
+
+- `Notify Unknown Incident` for the unknown classification branch.
+- Pagination in `Fetch Failed Executions`.
+- `workflow_name` enrichment via `GET /api/workflows/{id}`.
+- `retry_succeeded` reconciliation pass querying `execution_entity` for the retried execution's final status.
+- Filter Workflow 6's Telegram Trigger on `message.document` to skip non-PDF messages. This is the source of the majority of `permanent_config` failures currently classified.
+
 ---
 
 ## Repo Structure
@@ -628,10 +712,12 @@ Workflows that use sub-workflows:
 | Invoice Processing Pipeline | `notify-telegram` (or direct Telegram Send) |
 | Human-in-the-Loop Approval | none (paired with `approval-callback-handler`) |
 | Approval Callback Handler | none (companion to `human-in-the-loop-approval`) |
+| Workflow Health Monitor | none (top-level; monitors all other workflows) |
+| Workflow Incident Callback Handler | none (companion to `workflow-health-monitor`) |
 | GitHub Good First Issue Notifier | none |
 | Error Handler | none |
 
-Workflow 8 uses a two-workflow pattern rather than a sub-workflow. Both `human-in-the-loop-approval.json` and `approval-callback-handler.json` must be imported. The callback handler must be published before testing the parent workflow, or button clicks will not fire.
+Workflows 8 and 10 each use a two-workflow pattern rather than a sub-workflow. Workflow 8 requires `human-in-the-loop-approval.json` and `approval-callback-handler.json`. Workflow 10 requires `workflow-health-monitor.json` and `workflow-incident-callback-handler.json`. Callback handler workflows must be published before testing their parent workflow, or button clicks will not fire.
 
 ### External integrations
 
